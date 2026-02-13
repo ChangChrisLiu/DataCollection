@@ -156,10 +156,24 @@ class MujocoRobotServer:
         self._model = mujoco.MjModel.from_xml_string(xml_string, assets)
         self._data = mujoco.MjData(self._model)
 
-        self._num_joints = self._model.nu
+        home_id = None
+        for i in range(self._model.nkey):
+            name = mujoco.mj_id2name(self._model, mujoco.mjtObj.mjOBJ_KEY, i)
+            if name == "home":
+                home_id = i
+                break
 
-        self._joint_state = np.zeros(self._num_joints)
-        self._joint_cmd = self._joint_state
+        if home_id is not None:
+            mujoco.mj_resetDataKeyframe(self._model, self._data, home_id)
+        else:
+            # 兜底：直接设定 UR6 轴的基准姿态（弧度）
+            self._data.qpos[:6] = np.array([0.0, -np.pi/2, 0.0, -np.pi/2, 0.0, 0.0], dtype=float)
+            mujoco.mj_forward(self._model, self._data)
+                
+
+        self._num_joints = self._model.nu
+        self._joint_state = self._data.qpos.copy()[: self._num_joints]
+        self._joint_cmd   = self._joint_state.copy()
 
         self._zmq_server = ZMQRobotServer(robot=self, host=host, port=port)
         self._zmq_server_thread = ZMQServerThread(self._zmq_server)

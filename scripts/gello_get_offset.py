@@ -78,6 +78,37 @@ def get_config(args: Args) -> None:
             best_offsets.append(best_offset)
         print()
         print("best offsets               : ", [f"{x:.3f}" for x in best_offsets])
+        def wrap_pi(x):
+            return (x + np.pi) % (2*np.pi) - np.pi
+
+        fine_offsets = []
+        for i in range(args.num_robot_joints):
+            sign  = args.joint_signs[i]
+            meas  = curr_joints[i]       # 当前从 Dynamixel 读到的原始弧度
+            start = args.start_joints[i] # 你定义的 home（弧度）
+            # 连续解
+            offset_cont = meas - sign*start
+            # 对齐到与粗解最接近的 2π 分支
+            k = round((best_offsets[i] - offset_cont) / (2*np.pi))
+            offset_final = offset_cont + k*2*np.pi
+            fine_offsets.append(offset_final)
+
+        print("fine offsets (continuous):  ", [f"{x:.6f}" for x in fine_offsets])
+
+        # 对比残差（粗 vs 细）
+        residual_coarse, residual_fine = [], []
+        for i in range(args.num_robot_joints):
+            sign  = args.joint_signs[i]
+            meas  = curr_joints[i]
+            start = args.start_joints[i]
+            pred_c = sign*(meas - best_offsets[i])
+            pred_f = sign*(meas - fine_offsets[i])
+            residual_coarse.append(float(wrap_pi(pred_c - start)))
+            residual_fine.append(float(wrap_pi(pred_f - start)))
+
+        print("residual (coarse offsets): ", [f"{np.rad2deg(x):.2f}°" for x in residual_coarse])
+        print("residual (fine   offsets): ", [f"{np.rad2deg(x):.2f}°" for x in residual_fine])
+
         print(
             "best offsets function of pi: ["
             + ", ".join([f"{int(np.round(x/(np.pi/2)))}*np.pi/2" for x in best_offsets])
