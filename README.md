@@ -90,26 +90,31 @@ python experiments/launch_camera_nodes.py
 
 This auto-detects connected cameras (RealSense + OAK-D) and starts PUB streaming on ports 5000/5001.
 
-### 3. Launch Agent Server (T3)
+### 3. Launch Agent Server (T3) — GELLO only
 
-**GELLO:**
+Only needed when using the GELLO teleoperation device. Joystick and SpaceMouse run directly inside T4.
+
 ```bash
 python experiments/launch_gello_node.py
-```
-
-**Joystick:**
-```bash
-python experiments/launch_gello_node.py --agent joystick
 ```
 
 ### 4. Launch Control Loop (T4)
 
 ```bash
-# Basic teleoperation
+# GELLO teleoperation (requires T3)
 python experiments/run_env.py --agent=gello
 
-# With data collection
+# Joystick control (no T3 needed)
+python experiments/run_env.py --agent=joystick
+
+# SpaceMouse control (no T3 needed)
+python experiments/run_env.py --agent=spacemouse
+
+# With data collection (works with any agent)
 python experiments/run_env.py --agent=gello --use-save-interface
+
+# Without cameras (for testing)
+python experiments/run_env.py --agent=joystick --no-cameras
 ```
 
 ## Data Collection
