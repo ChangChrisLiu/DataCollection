@@ -29,7 +29,7 @@ Both cameras stream via async PUB/SUB with timestamps for synchronization.
 
 ### Control Agents
 - **GELLO** — Dynamixel-based teleoperation device (joint-space mirroring)
-- **Joystick** — Standard gamepad controller via pygame for teleoperation
+- **Joystick (Thrustmaster SOL-R2 HOSAS)** — Dual flight stick with Cartesian end-effector control via IK
 - **SpaceMouse** — 3Dconnexion 6-DOF input device (Cartesian end-effector control)
 
 ## Installation
@@ -221,6 +221,61 @@ Add the generated offsets to `gello/agents/gello_agent.py` in the `PORT_CONFIG_M
 | UR | `1 1 -1 1 1 1` |
 | Franka FR3 | `1 1 1 1 1 -1 1` |
 
+## Thrustmaster SOL-R2 HOSAS Setup
+
+The joystick agent is designed for the **Thrustmaster SOL-R2 HOSAS** dual flight stick controller. It uses Cartesian velocity control with MuJoCo IK, similar to the SpaceMouse agent.
+
+### Controller Mapping
+
+```
+LEFT STICK                          RIGHT STICK
+┌────────────────────┐              ┌────────────────────┐
+│  Axis 0,1: X/Y     │              │  Axis 0,1: Rx/Ry   │
+│  (TCP translation)  │              │  (TCP rotation)     │
+│                     │              │  Axis 2 (twist): Rz │
+│  Axis 3 (slider):  │              │  Axis 3 (mini): Z   │
+│   speed gain        │              │   (TCP up/down)     │
+│                     │              │                     │
+│  Mini-stick Y:      │              │  Button 2:          │
+│   gripper open/close│              │   vertical reorient │
+│                     │              │  Button 3:          │
+│  Button 0 (trigger):│              │   go to home        │
+│   toggle recording  │              │                     │
+└────────────────────┘              └────────────────────┘
+```
+
+### Usage
+
+```bash
+# Basic joystick teleoperation
+python experiments/run_env.py --agent=joystick
+
+# With data collection
+python experiments/run_env.py --agent=joystick --use-save-interface
+
+# With verbose output (shows IK status and skill triggers)
+python experiments/run_env.py --agent=joystick --verbose
+```
+
+The base slider on each stick controls speed gain (min 10% at zero, 100% at max). The `HOSASConfig` dataclass in `gello/agents/joystick_agent.py` contains all tunable parameters including speed limits, deadzone, and axis mappings.
+
+### Skills
+
+- **Home** (Right Button 3): Returns the robot to a safe home joint configuration
+- **Vertical Reorient** (Right Button 2): Forces the end-effector to point straight down
+
+### Swap Left/Right Sticks
+
+If your OS enumerates the sticks in reverse order, swap the indices in `run_env.py`:
+
+```python
+agent_cfg = {
+    "_target_": "gello.agents.joystick_agent.JoystickAgent",
+    "left_index": 1,   # swap
+    "right_index": 0,  # swap
+}
+```
+
 ## Code Organization
 
 ```
@@ -233,6 +288,7 @@ Add the generated offsets to `gello/agents/gello_agent.py` in the `PORT_CONFIG_M
 │   ├── agents/               # Control agents
 │   │   ├── agent.py          # Agent protocol
 │   │   ├── gello_agent.py    # GELLO Dynamixel agent
+│   │   ├── joystick_agent.py # Thrustmaster HOSAS dual-stick (Cartesian IK)
 │   │   ├── zmq_agent.py      # ZMQ client agent (connects to T3)
 │   │   └── spacemouse_agent.py
 │   ├── cameras/              # Camera drivers

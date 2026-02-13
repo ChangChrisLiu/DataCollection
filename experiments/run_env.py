@@ -100,7 +100,9 @@ def main(args):
     elif args.agent == "joystick":
         agent_cfg = {
             "_target_": "gello.agents.joystick_agent.JoystickAgent",
+            "robot_type": args.robot_type,
             "num_dofs": 7,
+            "verbose": args.verbose,
         }
     elif args.agent == "spacemouse":
         agent_cfg = {
