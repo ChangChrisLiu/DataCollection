@@ -46,6 +46,10 @@ class ZMQServerRobot:
                     result = self._robot.get_joint_state()
                 elif method == "command_joint_state":
                     result = self._robot.command_joint_state(**args)
+                elif method == "command_cartesian_velocity":
+                    result = self._robot.command_cartesian_velocity(**args)
+                elif method == "speed_stop":
+                    result = self._robot.speed_stop()
                 elif method == "get_observations":
                     result = self._robot.get_observations()
                 else:
@@ -116,6 +120,32 @@ class ZMQClientRobot(Robot):
         self._socket.send(send_message)
         result = pickle.loads(self._socket.recv())
         return result
+
+    def command_cartesian_velocity(
+        self,
+        velocity: np.ndarray,
+        acceleration: float = 0.5,
+        time_running: float = 0.1,
+        gripper_vel: float = 0.0,
+    ) -> None:
+        """Command TCP velocity via speedL through ZMQ."""
+        request = {
+            "method": "command_cartesian_velocity",
+            "args": {
+                "velocity": velocity,
+                "acceleration": acceleration,
+                "time_running": time_running,
+                "gripper_vel": gripper_vel,
+            },
+        }
+        self._socket.send(pickle.dumps(request))
+        pickle.loads(self._socket.recv())
+
+    def speed_stop(self) -> None:
+        """Stop speedL motion through ZMQ."""
+        request = {"method": "speed_stop"}
+        self._socket.send(pickle.dumps(request))
+        pickle.loads(self._socket.recv())
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         """Get the current observations of the leader robot.

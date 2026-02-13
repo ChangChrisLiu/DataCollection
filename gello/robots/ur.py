@@ -67,7 +67,7 @@ class URRobot(Robot):
         return pos
 
     def command_joint_state(self, joint_state: np.ndarray) -> None:
-        """Command the leader robot to a given state.
+        """Command the leader robot to a given state via servoJ.
 
         Args:
             joint_state (np.ndarray): The state to command the leader robot to.
@@ -87,6 +87,33 @@ class URRobot(Robot):
             gripper_pos = joint_state[-1] * 255
             self.gripper.move(gripper_pos, 255, 10)
         self.robot.waitPeriod(t_start)
+
+    def command_cartesian_velocity(
+        self,
+        velocity: np.ndarray,
+        acceleration: float = 0.5,
+        time_running: float = 0.1,
+        gripper_vel: float = 0.0,
+    ) -> None:
+        """Command TCP velocity via speedL. UR handles IK internally.
+
+        Args:
+            velocity: 6D Cartesian velocity [vx, vy, vz, wx, wy, wz] in base frame.
+            acceleration: TCP acceleration (m/s^2).
+            time_running: Time the command is active before safety stop (watchdog).
+            gripper_vel: Gripper velocity in normalized [0,1] range per step.
+                         Positive = close, negative = open.
+        """
+        assert len(velocity) == 6, f"Expected 6D velocity, got {len(velocity)}"
+        self.robot.speedL(list(velocity), acceleration, time=time_running)
+        if self._use_gripper and abs(gripper_vel) > 0.001:
+            current_grip = self._get_gripper_pos()
+            new_grip = max(0.0, min(1.0, current_grip + gripper_vel))
+            self.gripper.move(int(new_grip * 255), 255, 10)
+
+    def speed_stop(self) -> None:
+        """Stop speedL motion immediately."""
+        self.robot.speedStop()
 
     def freedrive_enabled(self) -> bool:
         """Check if the robot is in freedrive mode.

@@ -37,14 +37,66 @@ class RobotEnv:
     def __len__(self):
         return 0
 
-    def step(self, joints: np.ndarray) -> Dict[str, Any]:
-        """Send joint command to the robot and return observations."""
-        assert len(joints) == self._robot.num_dofs(), (
-            f"Action length ({len(joints)}) != robot DOF ({self._robot.num_dofs()})"
-        )
-        self._robot.command_joint_state(joints)
+    def step(self, action) -> Dict[str, Any]:
+        """Send a command to the robot and return observations.
+
+        Args:
+            action: Either a joint-position np.ndarray (for servoJ agents like
+                    GELLO/SpaceMouse), or a dict with 'type' key for velocity
+                    agents (joystick HOSAS):
+                      {'type': 'velocity', 'velocity': ndarray(6), ...}
+                      {'type': 'skill', 'skill': 'home'|'reorient'}
+        """
+        if isinstance(action, dict):
+            action_type = action.get("type")
+            if action_type == "velocity":
+                self._robot.command_cartesian_velocity(
+                    velocity=np.array(action["velocity"]),
+                    acceleration=action.get("acceleration", 0.5),
+                    time_running=action.get("time", 0.1),
+                    gripper_vel=action.get("gripper_vel", 0.0),
+                )
+            elif action_type == "skill":
+                self._handle_skill(action["skill"])
+            else:
+                raise ValueError(f"Unknown action type: {action_type}")
+        else:
+            # Joint-position command (servoJ)
+            assert len(action) == self._robot.num_dofs(), (
+                f"Action length ({len(action)}) != robot DOF ({self._robot.num_dofs()})"
+            )
+            self._robot.command_joint_state(action)
+
         self._rate.sleep()
         return self.get_obs()
+
+    def _handle_skill(self, skill: str) -> None:
+        """Execute a robot skill (blocking motion)."""
+        from gello.agents.joystick_agent import HOME_JOINTS_RAD
+
+        if skill == "home":
+            print("[SKILL] Moving to home position...")
+            self._robot.speed_stop()
+            # Move to home via servoJ in small steps
+            current = self._robot.get_joint_state()[:6]
+            home = np.array(HOME_JOINTS_RAD)
+            steps = max(int(np.abs(current - home).max() / 0.01), 50)
+            gripper_pos = self._robot.get_joint_state()[-1]
+            for jnt in np.linspace(current, home, steps):
+                full_cmd = np.append(jnt, gripper_pos)
+                self._robot.command_joint_state(full_cmd)
+                import time as _time
+                _time.sleep(0.002)
+            print("[SKILL] Home reached.")
+
+        elif skill == "reorient":
+            print("[SKILL] Vertical reorient requested.")
+            # Reorient is robot-specific; for now just stop motion
+            self._robot.speed_stop()
+            print("[SKILL] Reorient: use moveL externally or extend this method.")
+
+        else:
+            print(f"[SKILL] Unknown skill: {skill}")
 
     def get_obs(self) -> Dict[str, Any]:
         """Get observations from all cameras and robot state.

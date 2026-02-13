@@ -237,4 +237,11 @@ def run_control_loop(
                 save_interface.finish()
             break
 
+    # Stop any velocity motion on exit (safe for joystick/speedL mode)
+    try:
+        if hasattr(env.robot(), "speed_stop"):
+            env.robot().speed_stop()
+    except Exception:
+        pass
+
     print("Control loop ended.")

@@ -3,28 +3,33 @@
 
 This agent reads from a Thrustmaster SOL-R2 HOSAS (Hands-On-Stick-And-Stick)
 dual flight controller and maps the inputs to Cartesian velocity commands
-for the UR5e robot arm.
+for the UR5e robot arm via RTDE speedL (UR handles IK internally).
 
 Hardware Mapping (Thrustmaster SOL-R2 HOSAS):
   Left Stick:
-    Axis 0 (X) + Axis 1 (Y) → TCP translation X/Y (forward/back, left/right)
-    Axis 3 (slider/mini-stick) → speed gain multiplier
-    Mini-stick Y → gripper open/close
-    Button 0 (trigger) → toggle data recording
+    Axis 0 (X) + Axis 1 (Y) -> TCP translation X/Y (forward/back, left/right)
+    Axis 3 (slider)          -> speed gain multiplier
+    Mini-stick Y             -> gripper open/close
+    Button 0 (trigger)       -> toggle data recording (handled by SaveInterface)
 
   Right Stick:
-    Axis 0 (X) + Axis 1 (Y) → TCP rotation Rx/Ry (roll/pitch)
-    Axis 2 (twist) → TCP rotation Rz (yaw)
-    Axis 3 (mini-stick Y) → TCP translation Z (up/down)
-    Button 2 → skill: vertical reorient
-    Button 3 → skill: go to home position
+    Axis 0 (X) + Axis 1 (Y) -> TCP rotation Rx/Ry (roll/pitch)
+    Axis 2 (twist)           -> TCP rotation Rz (yaw)
+    Axis 3 (mini-stick Y)   -> TCP translation Z (up/down)
+    Button 2                 -> skill: vertical reorient
+    Button 3                 -> skill: go to home position
 
-The agent converts Cartesian velocity to joint-space targets using MuJoCo IK,
-similar to the SpacemouseAgent approach.
+Control mode:
+  This agent outputs a dict with 'velocity' (6D Cartesian) and 'gripper_vel',
+  which env.py routes to URRobot.command_cartesian_velocity() -> RTDE speedL().
+  The UR controller handles IK internally at 500Hz.
+
+  For skills (home, reorient), the agent outputs 'skill' commands that
+  run_env.py handles via moveJ/moveL.
 """
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -32,34 +37,9 @@ import numpy as np
 from gello.agents.agent import Agent
 
 
-# ============================================================================
-# Coordinate transforms (same as spacemouse_agent.py for UR5e)
-# MuJoCo has a slightly different coordinate system than UR control box
-# ============================================================================
-mj2ur = np.array([[0, -1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
-ur2mj = np.linalg.inv(mj2ur)
-
-# Controller-to-UR transform (adjust signs to match your physical mounting)
-hosas2ur = np.array([
-    [-1, 0, 0, 0],
-    [0, -1, 0, 0],
-    [0,  0, 1, 0],
-    [0,  0, 0, 1],
-])
-ur2hosas = np.linalg.inv(hosas2ur)
-
-
-def _apply_transfer(mat: np.ndarray, xyz: np.ndarray) -> np.ndarray:
-    if len(xyz) == 3:
-        xyz = np.append(xyz, 1)
-    return np.matmul(mat, xyz)[:3]
-
-
-# ============================================================================
 # Default home position for UR5e (in joint radians)
-# ============================================================================
 HOME_JOINTS_DEG = [-90, -90, 90, -90, -90, 0]
-HOME_JOINTS_RAD = [np.deg2rad(x) for x in HOME_JOINTS_DEG]
+HOME_JOINTS_RAD = np.deg2rad(HOME_JOINTS_DEG)
 
 
 @dataclass
@@ -68,6 +48,8 @@ class HOSASConfig:
     # Speed limits
     max_speed_linear: float = 0.25    # m/s max TCP translation speed
     max_speed_angular: float = 0.50   # rad/s max TCP rotation speed
+    acceleration: float = 0.5         # TCP acceleration (m/s^2)
+    watchdog_time: float = 0.1        # Safety watchdog for speedL (s)
 
     # Deadzone for all axes
     deadzone: float = 0.05
@@ -75,22 +57,34 @@ class HOSASConfig:
     # Minimum gain when speed slider is at zero
     min_gain: float = 0.1
 
-    # Gripper step per control cycle (0-1 scale, ~3/255 matches Gemini's GRIPPER_STEP=3)
+    # Gripper step per control cycle (normalized 0-1, ~3/255)
     gripper_step: float = 0.012
 
-    # Axis assignments for the right stick
-    mini_stick_y_axis: int = 3  # mini-stick Y axis index (for Z translation)
-
-    # IK rotation mode
-    rotation_mode: str = "euler"  # "euler" or "rpy"
+    # Axis assignment for mini-stick Y (may vary by OS)
+    mini_stick_y_axis: int = 3
 
 
 class JoystickAgent(Agent):
-    """Thrustmaster SOL-R2 HOSAS dual-stick agent for UR5e (6-DOF + gripper).
+    """Thrustmaster SOL-R2 HOSAS dual-stick agent for UR5e.
 
-    Uses Cartesian velocity input mapped through MuJoCo IK to produce
-    joint-space commands, similar to SpacemouseAgent.
+    Outputs Cartesian velocity commands (not joint positions).
+    The act() method returns a dict:
+      {
+        'type': 'velocity',
+        'velocity': np.ndarray(6),       # [vx, vy, vz, wx, wy, wz]
+        'acceleration': float,
+        'time': float,                   # watchdog
+        'gripper_vel': float,            # gripper delta per step
+      }
+    or for skills:
+      {
+        'type': 'skill',
+        'skill': 'home' | 'reorient',
+      }
     """
+
+    # Flag for env.py / run_env.py to detect this is a velocity-mode agent
+    control_mode = "cartesian_velocity"
 
     def __init__(
         self,
@@ -115,16 +109,8 @@ class JoystickAgent(Agent):
         self._right_buttons = []
         self._gripper_delta = 0.0
         self._skill_request = None  # "home", "reorient", or None
-
-        # Initialize MuJoCo physics for IK (same as SpacemouseAgent)
-        from dm_control import mjcf
-        from gello.dm_control_tasks.arms.ur5e import UR5e
-
-        if robot_type == "ur5":
-            _robot = UR5e()
-        else:
-            raise ValueError(f"Unknown robot type for IK: {robot_type}")
-        self.physics = mjcf.Physics.from_mjcf_model(_robot.mjcf_model)
+        self._gain_left = 1.0
+        self._gain_right = 1.0
 
         # Start background thread for joystick reading
         self._running = True
@@ -138,7 +124,7 @@ class JoystickAgent(Agent):
         return 0.0 if abs(val) < self.config.deadzone else val
 
     def _get_gain(self, joy) -> float:
-        """Read the base slider to compute a speed gain multiplier [min_gain, 1.0]."""
+        """Read the base slider to compute speed gain [min_gain, 1.0]."""
         try:
             val = joy.get_axis(3)  # Slider axis
             norm = (-val + 1) / 2.0
@@ -220,7 +206,8 @@ class JoystickAgent(Agent):
                         self._left_buttons = left_buttons
                         self._right_buttons = right_buttons
                         self._gripper_delta = grip_d
-                        self._skill_request = skill
+                        if skill is not None:
+                            self._skill_request = skill
                         self._gain_left = gain_left
                         self._gain_right = gain_right
 
@@ -233,129 +220,57 @@ class JoystickAgent(Agent):
     # ------------------------------------------------------------------
     # Agent interface
     # ------------------------------------------------------------------
-    def act(self, obs: Dict[str, Any]) -> np.ndarray:
-        import quaternion
+    def act(self, obs: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a velocity command dict (not a joint-position array).
 
-        num_dof = 6  # arm joints (gripper is separate)
-        current_qpos = obs["joint_positions"][:num_dof]
-        current_gripper = obs["joint_positions"][-1]
-
+        The control loop (run_env.py) checks the return type and routes
+        velocity commands to robot.command_cartesian_velocity() -> speedL.
+        """
         with self._lock:
             left_axes = self._left_axes.copy()
             right_axes = self._right_axes.copy()
             grip_d = self._gripper_delta
             skill = self._skill_request
-            gain_l = getattr(self, "_gain_left", 1.0)
-            gain_r = getattr(self, "_gain_right", 1.0)
+            gain_l = self._gain_left
+            gain_r = self._gain_right
             self._skill_request = None  # consume
 
-        # Handle skills: return target joint positions directly
-        if skill == "home":
+        # Handle skills
+        if skill is not None:
             if self._verbose:
-                print("[HOSAS] Skill: Home")
-            home = np.array(HOME_JOINTS_RAD + [current_gripper])
-            return home
-        elif skill == "reorient":
-            if self._verbose:
-                print("[HOSAS] Skill: Reorient (vertical)")
-            # Keep current joints, just return current (skill handled externally
-            # or could be implemented via IK to force vertical EE)
-            pass
+                print(f"[HOSAS] Skill: {skill}")
+            return {"type": "skill", "skill": skill}
 
-        # -----------------------------------------------------------
-        # Cartesian velocity from sticks
-        # -----------------------------------------------------------
-        # Left stick: translation X, Y
-        tx = -left_axes[1] * self.config.max_speed_linear * gain_l
-        ty = -left_axes[0] * self.config.max_speed_linear * gain_l
+        # Build 6D Cartesian velocity [vx, vy, vz, wx, wy, wz]
+        cfg = self.config
+        vel = np.zeros(6)
+
+        # Left stick: translation X, Y (adjust signs for your mounting)
+        vel[0] = -left_axes[1] * cfg.max_speed_linear * gain_l    # Forward/Back
+        vel[1] = -left_axes[0] * cfg.max_speed_linear * gain_l    # Left/Right
 
         # Right mini-stick: translation Z
-        mini_y_idx = self.config.mini_stick_y_axis
-        tz = 0.0
+        mini_y_idx = cfg.mini_stick_y_axis
         if mini_y_idx < len(right_axes):
-            tz = -right_axes[mini_y_idx] * self.config.max_speed_linear * gain_l
+            vel[2] = -right_axes[mini_y_idx] * cfg.max_speed_linear * gain_l  # Up/Down
 
-        # Right stick: rotation Rx, Ry; twist: Rz
-        r = right_axes[0] * self.config.max_speed_angular * gain_r
-        p = -right_axes[1] * self.config.max_speed_angular * gain_r
-        y = 0.0
+        # Right stick: rotation
+        vel[3] =  right_axes[0] * cfg.max_speed_angular * gain_r   # Roll  (Rx)
+        vel[4] = -right_axes[1] * cfg.max_speed_angular * gain_r   # Pitch (Ry)
         if len(right_axes) > 2:
-            y = -right_axes[2] * self.config.max_speed_angular * gain_r
+            vel[5] = -right_axes[2] * cfg.max_speed_angular * gain_r  # Yaw (Rz)
 
-        # -----------------------------------------------------------
-        # Forward kinematics: get current EE pose in MuJoCo
-        # -----------------------------------------------------------
-        self.physics.data.qpos[:num_dof] = current_qpos
-        self.physics.step()
+        if self._verbose and np.any(np.abs(vel) > 0.01):
+            print(f"[HOSAS] vel={vel}, grip_d={grip_d:.3f}, "
+                  f"gain_L={gain_l:.2f}, gain_R={gain_r:.2f}")
 
-        ee_rot = np.array(
-            self.physics.named.data.site_xmat["attachment_site"]
-        ).reshape(3, 3)
-        ee_pos = np.array(self.physics.named.data.site_xpos["attachment_site"])
-
-        # Transform from MuJoCo to UR coordinate space
-        ee_rot = mj2ur[:3, :3] @ ee_rot
-        ee_pos = _apply_transfer(mj2ur, ee_pos)
-
-        # -----------------------------------------------------------
-        # Apply velocity deltas
-        # -----------------------------------------------------------
-        # Translation delta
-        trans_delta = _apply_transfer(hosas2ur, np.array([tx, ty, tz]))
-        new_ee_pos = ee_pos + trans_delta
-
-        # Rotation delta (decomposed per axis, same as SpacemouseAgent)
-        scale = 1.0  # Already scaled above
-        rot_x = np.eye(4)
-        rot_x[:3, :3] = quaternion.as_rotation_matrix(
-            quaternion.from_rotation_vector(np.array([-p, 0, 0]) * scale)
-        )
-        rot_y = np.eye(4)
-        rot_y[:3, :3] = quaternion.as_rotation_matrix(
-            quaternion.from_rotation_vector(np.array([0, r, 0]) * scale)
-        )
-        rot_z = np.eye(4)
-        rot_z[:3, :3] = quaternion.as_rotation_matrix(
-            quaternion.from_rotation_vector(np.array([0, 0, -y]) * scale)
-        )
-        rot_transform = hosas2ur @ rot_z @ rot_y @ rot_x @ ur2hosas
-
-        if self.config.rotation_mode == "euler":
-            new_ee_rot = rot_transform[:3, :3] @ ee_rot
-        else:
-            new_ee_rot = ee_rot @ rot_transform[:3, :3]
-
-        # -----------------------------------------------------------
-        # Inverse kinematics
-        # -----------------------------------------------------------
-        from dm_control.utils.inverse_kinematics import qpos_from_site_pose
-
-        target_quat = quaternion.as_float_array(
-            quaternion.from_rotation_matrix(ur2mj[:3, :3] @ new_ee_rot)
-        )
-        ik_result = qpos_from_site_pose(
-            self.physics,
-            "attachment_site",
-            target_pos=_apply_transfer(ur2mj, new_ee_pos),
-            target_quat=target_quat,
-            tol=1e-14,
-            max_steps=400,
-        )
-        self.physics.reset()
-
-        if ik_result.success:
-            new_qpos = ik_result.qpos[:num_dof]
-        else:
-            if self._verbose:
-                print("[HOSAS] IK failed, holding position")
-            new_qpos = current_qpos
-
-        # -----------------------------------------------------------
-        # Gripper
-        # -----------------------------------------------------------
-        new_gripper = np.clip(current_gripper + grip_d, 0.0, 1.0)
-
-        return np.concatenate([new_qpos, [new_gripper]])
+        return {
+            "type": "velocity",
+            "velocity": vel,
+            "acceleration": cfg.acceleration,
+            "time": cfg.watchdog_time,
+            "gripper_vel": grip_d,
+        }
 
     def close(self) -> None:
         self._running = False
