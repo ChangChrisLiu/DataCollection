@@ -1,5 +1,6 @@
 # gello/env.py
 """Robot environment with async camera support."""
+
 import time
 from typing import Any, Dict, Optional
 
@@ -62,9 +63,9 @@ class RobotEnv:
                 raise ValueError(f"Unknown action type: {action_type}")
         else:
             # Joint-position command (servoJ)
-            assert len(action) == self._robot.num_dofs(), (
-                f"Action length ({len(action)}) != robot DOF ({self._robot.num_dofs()})"
-            )
+            assert (
+                len(action) == self._robot.num_dofs()
+            ), f"Action length ({len(action)}) != robot DOF ({self._robot.num_dofs()})"
             self._robot.command_joint_state(action)
 
         self._rate.sleep()
@@ -86,6 +87,7 @@ class RobotEnv:
                 full_cmd = np.append(jnt, gripper_pos)
                 self._robot.command_joint_state(full_cmd)
                 import time as _time
+
                 _time.sleep(0.002)
             print("[SKILL] Home reached.")
 

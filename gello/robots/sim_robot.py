@@ -167,13 +167,14 @@ class MujocoRobotServer:
             mujoco.mj_resetDataKeyframe(self._model, self._data, home_id)
         else:
             # 兜底：直接设定 UR6 轴的基准姿态（弧度）
-            self._data.qpos[:6] = np.array([0.0, -np.pi/2, 0.0, -np.pi/2, 0.0, 0.0], dtype=float)
+            self._data.qpos[:6] = np.array(
+                [0.0, -np.pi / 2, 0.0, -np.pi / 2, 0.0, 0.0], dtype=float
+            )
             mujoco.mj_forward(self._model, self._data)
-                
 
         self._num_joints = self._model.nu
         self._joint_state = self._data.qpos.copy()[: self._num_joints]
-        self._joint_cmd   = self._joint_state.copy()
+        self._joint_cmd = self._joint_state.copy()
 
         self._zmq_server = ZMQRobotServer(robot=self, host=host, port=port)
         self._zmq_server_thread = ZMQServerThread(self._zmq_server)

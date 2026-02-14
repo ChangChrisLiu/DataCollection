@@ -22,9 +22,7 @@ class ZMQServerRobot:
         self._socket = self._context.socket(zmq.REP)
         addr = f"tcp://{host}:{port}"
         print(f"Robot Server Binding to {addr}, Robot: {robot}")
-        self._timout_message = (
-            f"Timeout in Robot Server, Robot: {robot}"
-        )
+        self._timout_message = f"Timeout in Robot Server, Robot: {robot}"
         self._socket.bind(addr)
         self._stop_event = threading.Event()
 
@@ -48,9 +46,7 @@ class ZMQServerRobot:
                 elif method == "command_joint_state":
                     result = self._robot.command_joint_state(**args)
                 elif method == "command_cartesian_velocity":
-                    result = self._robot.command_cartesian_velocity(
-                        **args
-                    )
+                    result = self._robot.command_cartesian_velocity(**args)
                 elif method == "speed_stop":
                     result = self._robot.speed_stop()
                 elif method == "get_observations":
@@ -75,9 +71,7 @@ class ZMQServerRobot:
 class ZMQClientRobot(Robot):
     """A class representing a ZMQ client for a leader robot."""
 
-    def __init__(
-        self, port: int = DEFAULT_ROBOT_PORT, host: str = "127.0.0.1"
-    ):
+    def __init__(self, port: int = DEFAULT_ROBOT_PORT, host: str = "127.0.0.1"):
         self._context = zmq.Context()
         self._socket = self._context.socket(zmq.REQ)
         self._socket.connect(f"tcp://{host}:{port}")

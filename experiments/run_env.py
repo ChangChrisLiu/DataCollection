@@ -4,6 +4,7 @@
 Supports agents: gello, joystick, spacemouse, dummy/none
 Connects to: T1 (robot), T2 (cameras), T3 (agent server, gello only)
 """
+
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -24,8 +25,7 @@ def print_color(*args, color=None, attrs=(), **kwargs):
 
         if len(args) > 0:
             args = tuple(
-                termcolor.colored(arg, color=color, attrs=attrs)
-                for arg in args
+                termcolor.colored(arg, color=color, attrs=attrs) for arg in args
             )
     except ImportError:
         pass
@@ -69,9 +69,7 @@ def main(args):
         robot_client = PrintRobot(8, dont_print=True)
         camera_clients = {}
     else:
-        robot_client = ZMQClientRobot(
-            port=args.robot_port, host=args.hostname
-        )
+        robot_client = ZMQClientRobot(port=args.robot_port, host=args.hostname)
 
         if args.no_cameras:
             camera_clients = {}
@@ -143,9 +141,7 @@ def main(args):
     if args.agent == "gello":
         # Default UR5e reset pose (6 joints + 1 gripper)
         if args.start_joints is None:
-            reset_joints = np.deg2rad(
-                [0, -90, 90, -90, -90, 0, 0]
-            )
+            reset_joints = np.deg2rad([0, -90, 90, -90, -90, 0, 0])
         else:
             reset_joints = np.array(args.start_joints)
 
@@ -156,9 +152,7 @@ def main(args):
             steps = min(int(max_delta / 0.01), 100)
             if steps > 0:
                 print("Moving to start position...")
-                for jnt in np.linspace(
-                    curr_joints, reset_joints, steps
-                ):
+                for jnt in np.linspace(curr_joints, reset_joints, steps):
                     env.step(jnt)
                     time.sleep(0.001)
                 print("Done.")
@@ -184,9 +178,7 @@ def main(args):
             current = joints.copy()
             target = start_pos
             steps = min(
-                int(
-                    np.abs(angdiff(current, target)).max() / 0.01
-                ),
+                int(np.abs(angdiff(current, target)).max() / 0.01),
                 300,
             )
             for jnt in np.linspace(current, target, steps):
@@ -194,8 +186,7 @@ def main(args):
                 time.sleep(0.002)
 
         assert len(start_pos) == len(joints), (
-            f"Agent output dim = {len(start_pos)}, "
-            f"but env dim = {len(joints)}"
+            f"Agent output dim = {len(start_pos)}, " f"but env dim = {len(joints)}"
         )
 
         # Fine alignment
@@ -216,9 +207,7 @@ def main(args):
         joints = obs["joint_positions"]
         action = agent.act(obs)
         if (action - joints > 0.5).any():
-            print(
-                "WARNING: Action jump too large after alignment!"
-            )
+            print("WARNING: Action jump too large after alignment!")
             joint_index = np.where(action - joints > 0.8)
             for j in joint_index:
                 print(

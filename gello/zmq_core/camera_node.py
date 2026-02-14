@@ -36,9 +36,7 @@ class ZMQClientCamera(CameraDriver):
             print("   (OAK-D dummy frames set to 416x240)")
         else:
             dummy_img = np.zeros(dummy_shape_rgb, dtype=np.uint8)
-            dummy_depth = np.zeros(
-                dummy_shape_depth, dtype=np.uint16
-            )
+            dummy_depth = np.zeros(dummy_shape_depth, dtype=np.uint16)
             print("   (RealSense dummy frames set to 424x240)")
 
         self.latest_payload = (dummy_ts, dummy_img, dummy_depth)
@@ -50,10 +48,7 @@ class ZMQClientCamera(CameraDriver):
             daemon=True,
         )
         self.thread.start()
-        print(
-            f"ZMQClientCamera ({camera_name}): "
-            f"Background listener started."
-        )
+        print(f"ZMQClientCamera ({camera_name}): " f"Background listener started.")
 
     def _update_loop(self, context: zmq.Context):
         """Background thread: subscribe and listen for camera frames."""
@@ -80,10 +75,7 @@ class ZMQClientCamera(CameraDriver):
         except zmq.ContextTerminated:
             pass  # Normal shutdown
         except Exception as e:
-            print(
-                f"ZMQClientCamera ({self.camera_name}) "
-                f"thread error: {e}"
-            )
+            print(f"ZMQClientCamera ({self.camera_name}) " f"thread error: {e}")
             import traceback
 
             traceback.print_exc()

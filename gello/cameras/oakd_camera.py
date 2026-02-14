@@ -61,28 +61,18 @@ class OAKDCamera(CameraDriver):
         # Color camera (RGB)
         cam_rgb = pipeline.create(dai.node.ColorCamera)
         cam_rgb.setBoardSocket(dai.CameraBoardSocket.CAM_A)
-        cam_rgb.setResolution(
-            dai.ColorCameraProperties.SensorResolution.THE_12_MP
-        )
+        cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_12_MP)
         cam_rgb.setPreviewSize(rgb_width, rgb_height)
         cam_rgb.setFps(self._fps)
         cam_rgb.setInterleaved(False)
-        cam_rgb.setColorOrder(
-            dai.ColorCameraProperties.ColorOrder.RGB
-        )
+        cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.RGB)
         ctrl = cam_rgb.initialControl
-        ctrl.setAutoFocusMode(
-            dai.CameraControl.AutoFocusMode.OFF
-        )
+        ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
         ctrl.setAutoExposureEnable()
-        ctrl.setAutoWhiteBalanceMode(
-            dai.CameraControl.AutoWhiteBalanceMode.AUTO
-        )
+        ctrl.setAutoWhiteBalanceMode(dai.CameraControl.AutoWhiteBalanceMode.AUTO)
 
         # Mono cameras (for Stereo Depth)
-        mono_res = (
-            dai.MonoCameraProperties.SensorResolution.THE_400_P
-        )
+        mono_res = dai.MonoCameraProperties.SensorResolution.THE_400_P
         mono_left = pipeline.create(dai.node.MonoCamera)
         mono_left.setResolution(mono_res)
         mono_left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
@@ -94,12 +84,8 @@ class OAKDCamera(CameraDriver):
 
         # Stereo depth node
         stereo = pipeline.create(dai.node.StereoDepth)
-        stereo.setDefaultProfilePreset(
-            dai.node.StereoDepth.PresetMode.DEFAULT
-        )
-        stereo.initialConfig.setMedianFilter(
-            dai.MedianFilter.KERNEL_5x5
-        )
+        stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.DEFAULT)
+        stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_5x5)
         stereo.setLeftRightCheck(True)
         stereo.setExtendedDisparity(False)
         stereo.setSubpixel(True)
@@ -125,38 +111,27 @@ class OAKDCamera(CameraDriver):
         # Create device
         try:
             if self._device_id:
-                found, dev_info = dai.Device.getDeviceByMxId(
-                    self._device_id
-                )
+                found, dev_info = dai.Device.getDeviceByMxId(self._device_id)
                 if not found:
-                    raise RuntimeError(
-                        f"Device ID {self._device_id} not found"
-                    )
-                self._device = dai.Device(
-                    pipeline, dev_info, dai.UsbSpeed.SUPER_PLUS
-                )
+                    raise RuntimeError(f"Device ID {self._device_id} not found")
+                self._device = dai.Device(pipeline, dev_info, dai.UsbSpeed.SUPER_PLUS)
             else:
                 self._device = dai.Device(pipeline)
         except RuntimeError as e:
             print(
-                f"Failed to start OAK-D device "
-                f"(ID: {self._device_id}). Error: {e}"
+                f"Failed to start OAK-D device " f"(ID: {self._device_id}). Error: {e}"
             )
             raise
 
         # Output queues
-        self._q_rgb = self._device.getOutputQueue(
-            name="rgb", maxSize=4, blocking=False
-        )
+        self._q_rgb = self._device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
         self._q_depth = self._device.getOutputQueue(
             name="depth", maxSize=4, blocking=False
         )
 
         time.sleep(1.0)  # Wait for streams to stabilize
 
-    def read(
-        self, img_size: Optional[Tuple[int, int]] = None
-    ):  # img_size is (H, W)
+    def read(self, img_size: Optional[Tuple[int, int]] = None):  # img_size is (H, W)
         rgb_packet = self._q_rgb.tryGet()
         if rgb_packet is None:
             rgb_packet = self._q_rgb.get()
@@ -170,8 +145,7 @@ class OAKDCamera(CameraDriver):
         depth = depth_frame
 
         if img_size is not None and (
-            img_size[0] != image.shape[0]
-            or img_size[1] != image.shape[1]
+            img_size[0] != image.shape[0] or img_size[1] != image.shape[1]
         ):
             image_resized = cv2.resize(
                 image,
@@ -182,8 +156,7 @@ class OAKDCamera(CameraDriver):
             image_resized = image
 
         if img_size is not None and (
-            img_size[0] != depth.shape[0]
-            or img_size[1] != depth.shape[1]
+            img_size[0] != depth.shape[0] or img_size[1] != depth.shape[1]
         ):
             depth_resized = cv2.resize(
                 depth,
@@ -211,9 +184,7 @@ class OAKDCamera(CameraDriver):
             self._device.close()
 
 
-def _debug_read(
-    camera: CameraDriver, save_datastream: bool = False
-):
+def _debug_read(camera: CameraDriver, save_datastream: bool = False):
     import os
 
     import cv2
@@ -232,12 +203,8 @@ def _debug_read(
         try:
             image, depth = camera.read()
             image_bgr_display = image[:, :, ::-1]  # CV2 needs BGR
-            depth_viz = cv2.normalize(
-                depth, None, 255, 0, cv2.NORM_MINMAX, cv2.CV_8U
-            )
-            depth_viz_color = cv2.applyColorMap(
-                depth_viz, cv2.COLORMAP_JET
-            )
+            depth_viz = cv2.normalize(depth, None, 255, 0, cv2.NORM_MINMAX, cv2.CV_8U)
+            depth_viz_color = cv2.applyColorMap(depth_viz, cv2.COLORMAP_JET)
             if image.shape[:2] != depth.shape[:2]:
                 print(
                     f"WARNING: Resolution mismatch! "
@@ -252,24 +219,16 @@ def _debug_read(
             cv2.imshow("depth (Aligned)", depth_viz_color)
             key = cv2.waitKey(1)
             if key == ord("s"):
-                img_path = os.path.join(
-                    save_dir, f"image_{counter}.png"
-                )
+                img_path = os.path.join(save_dir, f"image_{counter}.png")
                 cv2.imwrite(img_path, image_bgr_display)
-                depth_path = os.path.join(
-                    save_dir, f"depth_{counter}.png"
-                )
+                depth_path = os.path.join(save_dir, f"depth_{counter}.png")
                 cv2.imwrite(depth_path, depth)
                 print(f"Saved: {img_path} and {depth_path}")
                 counter += 1
             if save_datastream:
-                img_path = os.path.join(
-                    save_dir, f"image_{counter}.png"
-                )
+                img_path = os.path.join(save_dir, f"image_{counter}.png")
                 cv2.imwrite(img_path, image_bgr_display)
-                depth_path = os.path.join(
-                    save_dir, f"depth_{counter}.png"
-                )
+                depth_path = os.path.join(save_dir, f"depth_{counter}.png")
                 cv2.imwrite(depth_path, depth)
                 counter += 1
             if key == 27:

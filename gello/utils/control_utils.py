@@ -14,7 +14,6 @@ from gello.agents.agent import Agent
 from gello.env import RobotEnv
 from gello.data_utils.keyboard_interface import KBReset
 
-
 DEFAULT_MAX_JOINT_DELTA = 1.0
 
 
@@ -53,9 +52,9 @@ def move_to_start_position(
         return False
 
     print(f"Start pos: {len(start_pos)}", f"Joints: {len(joints)}")
-    assert len(start_pos) == len(joints), (
-        f"agent output dim = {len(start_pos)}, but env dim = {len(joints)}"
-    )
+    assert len(start_pos) == len(
+        joints
+    ), f"agent output dim = {len(start_pos)}, but env dim = {len(joints)}"
 
     for _ in range(steps):
         obs = env.get_obs()
@@ -94,16 +93,10 @@ class SaveInterface:
         self.frame_count = 0
 
         print("Save interface enabled. Use keyboard controls:")
-        print(
-            "  S: Start recording (~30Hz on new camera frames)"
-        )
-        print(
-            "  Q: Stop recording (then prompts Good/Not Good)"
-        )
+        print("  S: Start recording (~30Hz on new camera frames)")
+        print("  Q: Stop recording (then prompts Good/Not Good)")
 
-    def _prompt_quality(
-        self, finished_path: Path, finished_frame_count: int
-    ) -> None:
+    def _prompt_quality(self, finished_path: Path, finished_frame_count: int) -> None:
         """Ask user whether the recording was good or failed."""
         print(
             f"\nStopped recording. Saved {finished_frame_count} "
@@ -111,10 +104,7 @@ class SaveInterface:
         )
         while True:
             user_input = (
-                input(
-                    "  Was this demo successful? "
-                    "(g = Good / n = Not Good): "
-                )
+                input("  Was this demo successful? " "(g = Good / n = Not Good): ")
                 .strip()
                 .lower()
             )
@@ -134,9 +124,7 @@ class SaveInterface:
             else:
                 print("  Invalid input. Please enter 'g' or 'n'.")
 
-    def update(
-        self, obs: Dict[str, Any], action: np.ndarray
-    ) -> Optional[str]:
+    def update(self, obs: Dict[str, Any], action: np.ndarray) -> Optional[str]:
         """Update the save interface.
 
         Returns 'quit' to exit the control loop.
@@ -167,20 +155,16 @@ class SaveInterface:
                 current_wrist_ts = obs.get("wrist_timestamp", 0.0)
                 current_base_ts = obs.get("base_timestamp", 0.0)
                 has_new_wrist = (
-                    current_wrist_ts > 0
-                    and current_wrist_ts > self.last_saved_wrist_ts
+                    current_wrist_ts > 0 and current_wrist_ts > self.last_saved_wrist_ts
                 )
                 has_new_base = (
-                    current_base_ts > 0
-                    and current_base_ts > self.last_saved_base_ts
+                    current_base_ts > 0 and current_base_ts > self.last_saved_base_ts
                 )
                 has_new_frame = has_new_wrist or has_new_base
 
                 if has_new_frame:
                     ts = dt.strftime("%Y%m%d_%H%M%S_%f")
-                    filename = (
-                        f"frame_{self.frame_count:04d}_{ts}.pkl"
-                    )
+                    filename = f"frame_{self.frame_count:04d}_{ts}.pkl"
                     filepath = self.save_path / filename
                     data_to_save = {"obs": obs, "action": action}
                     try:
@@ -192,10 +176,7 @@ class SaveInterface:
                             self.last_saved_base_ts = current_base_ts
                         self.frame_count += 1
                     except Exception as e:
-                        print(
-                            f"\nFailed to save frame: "
-                            f"{filepath}, error: {e}"
-                        )
+                        print(f"\nFailed to save frame: " f"{filepath}, error: {e}")
 
         elif state == "normal":
             # Q was pressed — stop recording
@@ -226,6 +207,7 @@ def run_control_loop(
     # Start message
     try:
         from termcolor import colored
+
         start_msg = colored("\nStart", color="green", attrs=["bold"])
         colors_ok = True
     except ImportError:
@@ -280,6 +262,7 @@ def run_control_loop(
         except Exception as e:
             print(f"\nControl loop error: {e}")
             import traceback
+
             traceback.print_exc()
             if save_interface is not None:
                 save_interface.finish()

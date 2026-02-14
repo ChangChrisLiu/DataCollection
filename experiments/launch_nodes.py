@@ -3,6 +3,7 @@
 
 Supported robots: ur, sim_ur, panda, sim_panda, bimanual_ur, print/none
 """
+
 from dataclasses import dataclass
 from pathlib import Path
 

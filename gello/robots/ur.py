@@ -8,9 +8,7 @@ from gello.robots.robot import Robot
 class URRobot(Robot):
     """A class representing a UR robot."""
 
-    def __init__(
-        self, robot_ip: str = "192.168.1.10", no_gripper: bool = False
-    ):
+    def __init__(self, robot_ip: str = "192.168.1.10", no_gripper: bool = False):
         import rtde_control
         import rtde_receive
 
@@ -51,9 +49,7 @@ class URRobot(Robot):
 
         time.sleep(0.01)
         gripper_pos = self.gripper.get_current_position()
-        assert (
-            0 <= gripper_pos <= 255
-        ), "Gripper position must be between 0 and 255"
+        assert 0 <= gripper_pos <= 255, "Gripper position must be between 0 and 255"
         return gripper_pos / 255
 
     def get_joint_state(self) -> np.ndarray:
@@ -117,17 +113,11 @@ class URRobot(Robot):
             gripper_vel: Gripper velocity in normalized [0,1] range
                 per step. Positive = close, negative = open.
         """
-        assert len(velocity) == 6, (
-            f"Expected 6D velocity, got {len(velocity)}"
-        )
-        self.robot.speedL(
-            list(velocity), acceleration, time=time_running
-        )
+        assert len(velocity) == 6, f"Expected 6D velocity, got {len(velocity)}"
+        self.robot.speedL(list(velocity), acceleration, time=time_running)
         if self._use_gripper and abs(gripper_vel) > 0.001:
             current_grip = self._get_gripper_pos()
-            new_grip = max(
-                0.0, min(1.0, current_grip + gripper_vel)
-            )
+            new_grip = max(0.0, min(1.0, current_grip + gripper_vel))
             self.gripper.move(int(new_grip * 255), 255, 10)
 
     def speed_stop(self) -> None:

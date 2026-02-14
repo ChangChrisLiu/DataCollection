@@ -44,34 +44,22 @@ def launch_publisher_server_with_init(
                 RealSenseCamera,
             )
 
-            camera_driver = RealSenseCamera(
-                device_id=device_id, flip=flip
-            )
+            camera_driver = RealSenseCamera(device_id=device_id, flip=flip)
         elif camera_type == "oakd":
             from gello.cameras.oakd_camera import OAKDCamera
 
-            camera_driver = OAKDCamera(
-                device_id=device_id, flip=flip
-            )
+            camera_driver = OAKDCamera(device_id=device_id, flip=flip)
         else:
-            raise ValueError(
-                f"Unknown camera type: {camera_type}"
-            )
+            raise ValueError(f"Unknown camera type: {camera_type}")
     except Exception as e:
-        print(
-            f"{camera_name} ({camera_type}) "
-            f"initialization failed: {e}"
-        )
+        print(f"{camera_name} ({camera_type}) " f"initialization failed: {e}")
         return
 
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     addr = f"tcp://{host}:{port}"
     socket.bind(addr)
-    print(
-        f"Starting Async Camera PUBLISHER: "
-        f"{camera_name} on {addr} (30Hz)"
-    )
+    print(f"Starting Async Camera PUBLISHER: " f"{camera_name} on {addr} (30Hz)")
 
     target_sleep = 1.0 / 30.0
 
@@ -83,17 +71,13 @@ def launch_publisher_server_with_init(
             payload = (timestamp, image, depth)
             socket.send(pickle.dumps(payload))
 
-            time_to_sleep = target_sleep - (
-                time.time() - start_time
-            )
+            time_to_sleep = target_sleep - (time.time() - start_time)
             if time_to_sleep > 0:
                 time.sleep(time_to_sleep)
         except KeyboardInterrupt:
             break
         except Exception as e:
-            print(
-                f"Camera PUBLISHER Error ({camera_name}): {e}"
-            )
+            print(f"Camera PUBLISHER Error ({camera_name}): {e}")
             time.sleep(1)
 
 
@@ -157,9 +141,7 @@ def main(args: Args):
         print("No camera servers to start. Exiting.")
         return
 
-    print(
-        f"\nStarting {len(processes)} camera PUBLISHER processes..."
-    )
+    print(f"\nStarting {len(processes)} camera PUBLISHER processes...")
     for p in processes:
         p.start()
 

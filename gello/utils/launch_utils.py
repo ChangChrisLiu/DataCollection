@@ -20,9 +20,7 @@ class SimpleLaunchManager:
 
     def _load_config(self) -> Dict[str, Any]:
         """Load and resolve configuration."""
-        cfg = OmegaConf.to_container(
-            OmegaConf.load(self.config_path), resolve=True
-        )
+        cfg = OmegaConf.to_container(OmegaConf.load(self.config_path), resolve=True)
 
         # Handle robot config
         robot_cfg = cfg["robot"]
@@ -40,19 +38,14 @@ class SimpleLaunchManager:
         # Check if it's a Dynamixel robot
         robot_cfg = self.cfg["robot"]
         if "DynamixelRobot" in str(robot_cfg.get("_target_", "")):
-            print(
-                "Detected Dynamixel robot, "
-                "using enhanced initialization..."
-            )
+            print("Detected Dynamixel robot, " "using enhanced initialization...")
             # Extract Dynamixel configuration
             dynamixel_config = robot_cfg.get("config", {})
             ids = dynamixel_config.get("ids", [1])
             port = dynamixel_config.get("port", "/dev/ttyUSB0")
             baudrate = dynamixel_config.get("baudrate", 57600)
             max_retries = dynamixel_config.get("max_retries", 3)
-            use_fake_fallback = dynamixel_config.get(
-                "use_fake_fallback", True
-            )
+            use_fake_fallback = dynamixel_config.get("use_fake_fallback", True)
 
             # Use enhanced driver with retry logic and fallback
             from gello.dynamixel.driver import DynamixelDriver
@@ -83,9 +76,7 @@ class SimpleLaunchManager:
         if hasattr(self.robot, "serve"):  # MujocoRobot/ZMQServer
             print("Starting robot server...")
             # Start server in background
-            self.server_thread = threading.Thread(
-                target=self.robot.serve, daemon=True
-            )
+            self.server_thread = threading.Thread(target=self.robot.serve, daemon=True)
             self.server_thread.start()
             time.sleep(2)  # Give server time to start
 
@@ -96,21 +87,15 @@ class SimpleLaunchManager:
             )
         else:  # Direct robot (hardware)
             # Create ZMQ server for the hardware robot
-            server = ZMQServerRobot(
-                self.robot, port=6001, host="127.0.0.1"
-            )
-            self.server_thread = threading.Thread(
-                target=server.serve, daemon=True
-            )
+            server = ZMQServerRobot(self.robot, port=6001, host="127.0.0.1")
+            self.server_thread = threading.Thread(target=server.serve, daemon=True)
             self.server_thread.start()
             time.sleep(1)
 
             # Create client to communicate with hardware
             robot_client = ZMQClientRobot(port=6001, host="127.0.0.1")
 
-        self.env = RobotEnv(
-            robot_client, control_rate_hz=self.cfg.get("hz", 30)
-        )
+        self.env = RobotEnv(robot_client, control_rate_hz=self.cfg.get("hz", 30))
 
     def setup_agent(self):
         """Setup the agent."""
@@ -119,9 +104,7 @@ class SimpleLaunchManager:
 
     def move_to_joints(self, joints: np.ndarray):
         """Move robot to specified joints."""
-        for jnt in np.linspace(
-            self.env.get_obs()["joint_positions"], joints, 100
-        ):
+        for jnt in np.linspace(self.env.get_obs()["joint_positions"], joints, 100):
             self.env.step(jnt)
             time.sleep(0.001)
 
@@ -133,8 +116,7 @@ class SimpleLaunchManager:
 
         print(f"Start pos: {len(start_pos)}", f"Joints: {len(joints)}")
         assert len(start_pos) == len(joints), (
-            f"agent output dim = {len(start_pos)}, "
-            f"but env dim = {len(joints)}"
+            f"agent output dim = {len(start_pos)}, " f"but env dim = {len(joints)}"
         )
 
         return start_pos
@@ -143,15 +125,10 @@ class SimpleLaunchManager:
         """Run the main control loop."""
         robot_name = self.robot.__class__.__name__
         agent_name = self.agent.__class__.__name__
-        print(
-            f"Launching robot: {robot_name}, "
-            f"agent: {agent_name}"
-        )
+        print(f"Launching robot: {robot_name}, " f"agent: {agent_name}")
         hz = self.cfg.get("hz", 30)
         max_steps = self.cfg.get("max_steps", 1000)
-        print(
-            f"Control loop: {hz} Hz, max_steps: {max_steps}"
-        )
+        print(f"Control loop: {hz} Hz, max_steps: {max_steps}")
 
         # Initial positioning
         start_pos = self.validate_agent_output()
@@ -236,9 +213,7 @@ def move_to_start_position(
         right_start = right_cfg["agent"].get("start_joints")
         if left_start is None or right_start is None:
             return
-        reset_joints = np.concatenate(
-            [np.array(left_start), np.array(right_start)]
-        )
+        reset_joints = np.concatenate([np.array(left_start), np.array(right_start)])
     else:
         if (
             "start_joints" not in left_cfg["agent"]
@@ -249,10 +224,7 @@ def move_to_start_position(
 
     curr_joints = env.get_obs()["joint_positions"]
     if reset_joints.shape != curr_joints.shape:
-        print(
-            "Warning: Mismatch in joint shapes, "
-            "skipping move_to_start_position."
-        )
+        print("Warning: Mismatch in joint shapes, " "skipping move_to_start_position.")
         return
 
     max_delta = (np.abs(curr_joints - reset_joints)).max()
@@ -267,21 +239,10 @@ def move_to_start_position(
 def instantiate_from_dict(cfg):
     """Instantiate objects from configuration."""
     if isinstance(cfg, dict) and "_target_" in cfg:
-        module_path, class_name = cfg["_target_"].rsplit(
-            ".", 1
-        )
-        cls = getattr(
-            importlib.import_module(module_path), class_name
-        )
-        kwargs = {
-            k: v for k, v in cfg.items() if k != "_target_"
-        }
-        return cls(
-            **{
-                k: instantiate_from_dict(v)
-                for k, v in kwargs.items()
-            }
-        )
+        module_path, class_name = cfg["_target_"].rsplit(".", 1)
+        cls = getattr(importlib.import_module(module_path), class_name)
+        kwargs = {k: v for k, v in cfg.items() if k != "_target_"}
+        return cls(**{k: instantiate_from_dict(v) for k, v in kwargs.items()})
     elif isinstance(cfg, dict):
         return {k: instantiate_from_dict(v) for k, v in cfg.items()}
     elif isinstance(cfg, list):

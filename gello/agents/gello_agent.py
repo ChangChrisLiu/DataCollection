@@ -106,22 +106,23 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
         gripper_config=(7, 286, 248),
     ),
     "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTAA08H1-if00-port0": DynamixelRobotConfig(
-    joint_ids=(1, 2, 3, 4, 5, 6),  # 如果你的实际ID顺序不同，这里要按实际改
-    # 你给出的 best offsets（单位：弧度），等价 π/2 的整数倍：
-    # [π/2, 2π, 0, π, 3π/2, 3π/2]
-    joint_offsets=(1.494097,   # J1
-        1.550858,   # J2
-        -0.009204,  # J3
-        4.687849,   # J4
-        4.713923,   # J5
-        -1.546253,),
-
-    # 先全部用 +1；如果某一轴跟随方向相反，测试时把对应位置改成 -1
-    joint_signs=(1, 1, -1, 1, 1, 1),
-
-    # 夹爪：你测得的开/合角（单位：度）。(gripper_joint_id, open_deg, close_deg)
-    gripper_config=(7, 105, 64),
-),}
+        joint_ids=(1, 2, 3, 4, 5, 6),  # 如果你的实际ID顺序不同，这里要按实际改
+        # 你给出的 best offsets（单位：弧度），等价 π/2 的整数倍：
+        # [π/2, 2π, 0, π, 3π/2, 3π/2]
+        joint_offsets=(
+            1.494097,  # J1
+            1.550858,  # J2
+            -0.009204,  # J3
+            4.687849,  # J4
+            4.713923,  # J5
+            -1.546253,
+        ),
+        # 先全部用 +1；如果某一轴跟随方向相反，测试时把对应位置改成 -1
+        joint_signs=(1, 1, -1, 1, 1, 1),
+        # 夹爪：你测得的开/合角（单位：度）。(gripper_joint_id, open_deg, close_deg)
+        gripper_config=(7, 105, 64),
+    ),
+}
 
 
 class GelloAgent(Agent):

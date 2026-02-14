@@ -24,9 +24,7 @@ class RealSenseCamera(CameraDriver):
     def __repr__(self) -> str:
         return f"RealSenseCamera(device_id={self._device_id}, align=True)"
 
-    def __init__(
-        self, device_id: Optional[str] = None, flip: bool = False
-    ):
+    def __init__(self, device_id: Optional[str] = None, flip: bool = False):
         import pyrealsense2 as rs
 
         self._device_id = device_id
@@ -116,20 +114,20 @@ class RealSenseCamera(CameraDriver):
         depth_image = np.asanyarray(aligned_depth_frame.get_data())  # uint16
 
         if img_size is not None and (
-            img_size[0] != color_image.shape[0]
-            or img_size[1] != color_image.shape[1]
+            img_size[0] != color_image.shape[0] or img_size[1] != color_image.shape[1]
         ):
             image_resized = cv2.resize(
                 color_image,
                 (img_size[1], img_size[0]),
                 interpolation=cv2.INTER_AREA,
-            )[:, :, ::-1]  # BGR to RGB
+            )[
+                :, :, ::-1
+            ]  # BGR to RGB
         else:
             image_resized = color_image[:, :, ::-1]  # BGR to RGB
 
         if img_size is not None and (
-            img_size[0] != depth_image.shape[0]
-            or img_size[1] != depth_image.shape[1]
+            img_size[0] != depth_image.shape[0] or img_size[1] != depth_image.shape[1]
         ):
             depth_resized = cv2.resize(
                 depth_image,
@@ -178,9 +176,7 @@ def _debug_read(camera, save_datastream=False):
         image, depth = camera.read()
 
         # Visualize depth
-        depth_viz = cv2.normalize(
-            depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U
-        )
+        depth_viz = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
         depth_viz_color = cv2.applyColorMap(depth_viz, cv2.COLORMAP_JET)
 
         if image.shape[:2] != depth.shape[:2]:
@@ -199,15 +195,11 @@ def _debug_read(camera, save_datastream=False):
 
         key = cv2.waitKey(1)
         if key == ord("s"):
-            cv2.imwrite(
-                f"images/image_{counter}.png", image[:, :, ::-1]
-            )
+            cv2.imwrite(f"images/image_{counter}.png", image[:, :, ::-1])
             cv2.imwrite(f"images/depth_{counter}.png", depth)
             print(f"Saved image_{counter}.png, depth_{counter}.png")
         if save_datastream:
-            cv2.imwrite(
-                f"stream/image_{counter}.png", image[:, :, ::-1]
-            )
+            cv2.imwrite(f"stream/image_{counter}.png", image[:, :, ::-1])
             cv2.imwrite(f"stream/depth_{counter}.png", depth)
         counter += 1
         if key == 27:

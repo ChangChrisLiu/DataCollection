@@ -31,13 +31,6 @@ jobs:
           pip install -e .
           pip install third_party/DynamixelSDK/python
 
-      - name: Black (show diff for debug)
-        if: always()
-        run: |
-          echo "=== Files that need reformatting ==="
-          black --check --verbose gello 2>&1 || true
-          echo "=== Detailed diff ==="
-          black --diff gello 2>&1 | head -200 || true
       - name: Black
         run: |
           black --check gello
