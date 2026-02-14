@@ -25,7 +25,10 @@ def angdiff(a, b):
 
 
 def move_to_start_position(
-    env: RobotEnv, agent: Agent, max_delta: float = 1.0, steps: int = 25
+    env: RobotEnv,
+    agent: Agent,
+    max_delta: float = 1.0,
+    steps: int = 25,
 ) -> bool:
     """Move robot to start position gradually."""
     print("Going to start position")
@@ -80,7 +83,10 @@ class SaveInterface:
         expand_user: bool = False,
     ):
         self.kb_interface = KBReset()
-        self.data_dir = Path(data_dir).expanduser() if expand_user else Path(data_dir)
+        if expand_user:
+            self.data_dir = Path(data_dir).expanduser()
+        else:
+            self.data_dir = Path(data_dir)
         self.agent_name = agent_name
         self.save_path: Optional[Path] = None
         self.last_saved_wrist_ts = 0.0
@@ -88,17 +94,35 @@ class SaveInterface:
         self.frame_count = 0
 
         print("Save interface enabled. Use keyboard controls:")
-        print("  S: Start recording (saves at ~30Hz on new camera frames)")
-        print("  Q: Stop recording (then prompts Good/Not Good)")
+        print(
+            "  S: Start recording (~30Hz on new camera frames)"
+        )
+        print(
+            "  Q: Stop recording (then prompts Good/Not Good)"
+        )
 
-    def _prompt_quality(self, finished_path: Path, finished_frame_count: int) -> None:
+    def _prompt_quality(
+        self, finished_path: Path, finished_frame_count: int
+    ) -> None:
         """Ask user whether the recording was good or failed."""
-        print(f"\nStopped recording. Saved {finished_frame_count} frames to {finished_path}")
+        print(
+            f"\nStopped recording. Saved {finished_frame_count} "
+            f"frames to {finished_path}"
+        )
         while True:
-            user_input = input("  Was this demo successful? (g = Good / n = Not Good): ").strip().lower()
+            user_input = (
+                input(
+                    "  Was this demo successful? "
+                    "(g = Good / n = Not Good): "
+                )
+                .strip()
+                .lower()
+            )
             if user_input == "n":
                 try:
-                    failed_path = finished_path.with_name(finished_path.name + "_Failed")
+                    failed_path = finished_path.with_name(
+                        finished_path.name + "_Failed"
+                    )
                     finished_path.rename(failed_path)
                     print(f"  Marked as failed: {failed_path.name}")
                 except Exception as e:
@@ -110,14 +134,22 @@ class SaveInterface:
             else:
                 print("  Invalid input. Please enter 'g' or 'n'.")
 
-    def update(self, obs: Dict[str, Any], action: np.ndarray) -> Optional[str]:
-        """Update the save interface. Returns 'quit' to exit the control loop."""
+    def update(
+        self, obs: Dict[str, Any], action: np.ndarray
+    ) -> Optional[str]:
+        """Update the save interface.
+
+        Returns 'quit' to exit the control loop.
+        """
         dt = datetime.datetime.now()
         state = self.kb_interface.update()
 
         if state == "start":
             if self.save_path is not None:
-                print("\nWARNING: 'S' pressed while already recording. Previous data may be unlabeled.")
+                print(
+                    "\nWARNING: 'S' pressed while already "
+                    "recording. Previous data may be unlabeled."
+                )
                 self.save_path = None
 
             dt_time = datetime.datetime.now()
@@ -134,12 +166,21 @@ class SaveInterface:
             if self.save_path is not None:
                 current_wrist_ts = obs.get("wrist_timestamp", 0.0)
                 current_base_ts = obs.get("base_timestamp", 0.0)
-                has_new_wrist = current_wrist_ts > 0 and current_wrist_ts > self.last_saved_wrist_ts
-                has_new_base = current_base_ts > 0 and current_base_ts > self.last_saved_base_ts
+                has_new_wrist = (
+                    current_wrist_ts > 0
+                    and current_wrist_ts > self.last_saved_wrist_ts
+                )
+                has_new_base = (
+                    current_base_ts > 0
+                    and current_base_ts > self.last_saved_base_ts
+                )
                 has_new_frame = has_new_wrist or has_new_base
 
                 if has_new_frame:
-                    filename = f"frame_{self.frame_count:04d}_{dt.strftime('%Y%m%d_%H%M%S_%f')}.pkl"
+                    ts = dt.strftime("%Y%m%d_%H%M%S_%f")
+                    filename = (
+                        f"frame_{self.frame_count:04d}_{ts}.pkl"
+                    )
                     filepath = self.save_path / filename
                     data_to_save = {"obs": obs, "action": action}
                     try:
@@ -151,7 +192,10 @@ class SaveInterface:
                             self.last_saved_base_ts = current_base_ts
                         self.frame_count += 1
                     except Exception as e:
-                        print(f"\nFailed to save frame: {filepath}, error: {e}")
+                        print(
+                            f"\nFailed to save frame: "
+                            f"{filepath}, error: {e}"
+                        )
 
         elif state == "normal":
             # Q was pressed — stop recording
@@ -218,7 +262,11 @@ def run_control_loop(
                 hz = loop_count / (current_time - last_print_time)
                 msg = f"\rT:{elapsed:.1f}s | Hz:{hz:.1f}          "
                 if colors_ok:
-                    print(colored(msg, color="white", attrs=["bold"]), end="", flush=True)
+                    print(
+                        colored(msg, color="white", attrs=["bold"]),
+                        end="",
+                        flush=True,
+                    )
                 else:
                     print(msg, end="", flush=True)
                 last_print_time = current_time

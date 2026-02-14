@@ -1,21 +1,33 @@
-# keep in alphabetical order
-dm_control
+# Core dependencies (installable on any system)
+numpy
 omegaconf==2.3.0
 Pillow
-pin==3.7.0
 pygame
-pyspacemouse
-PyQt6
-pyquaternion
-pyrealsense2
 pyzmq
-pure-python-adb
-quaternion
 setuptools
-tyro
-ur-rtde
-zmq
-xarm
-xarm-python-sdk
-numpy-quaternion
 termcolor
+tyro
+zmq
+
+# Optional: Robot hardware (install manually on robot workstation)
+# ur-rtde
+# pyrealsense2
+# depthai           # OAK-D camera
+
+# Optional: Teleoperation devices
+# pyspacemouse
+# quaternion
+# numpy-quaternion
+
+# Optional: Simulation / IK
+# dm_control
+# pin==3.7.0        # Pinocchio (for FACTR gravity compensation)
+
+# Optional: GUI
+# PyQt6
+
+# Removed (no longer used):
+# xarm
+# xarm-python-sdk
+# pure-python-adb
+# pyquaternion

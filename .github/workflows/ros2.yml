@@ -1,19 +1,22 @@
 name: ROS 2 workspace
 
+# Disabled: ROS 2 Franka integration is not the current focus.
+# Re-enable by uncommenting the triggers below.
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  schedule:
-    - cron: "0 0 * * 0"
+  workflow_dispatch:  # manual trigger only
+  # push:
+  #   branches: [ main ]
+  # pull_request:
+  #   branches: [ main ]
+  # schedule:
+  #   - cron: "0 0 * * 0"
 
 jobs:
   test-in-devcontainer:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Build and test ROS 2 workspace
         uses: devcontainers/ci@v0.3

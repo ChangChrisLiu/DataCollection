@@ -7,10 +7,10 @@ for the UR5e robot arm via RTDE speedL (UR handles IK internally).
 
 Hardware Mapping (Thrustmaster SOL-R2 HOSAS):
   Left Stick:
-    Axis 0 (X) + Axis 1 (Y) -> TCP translation X/Y (forward/back, left/right)
+    Axis 0 (X) + Axis 1 (Y) -> TCP translation X/Y
     Axis 3 (slider)          -> speed gain multiplier
     Mini-stick Y             -> gripper open/close
-    Button 0 (trigger)       -> toggle data recording (handled by SaveInterface)
+    Button 0 (trigger)       -> toggle data recording
 
   Right Stick:
     Axis 0 (X) + Axis 1 (Y) -> TCP rotation Rx/Ry (roll/pitch)
@@ -45,11 +45,12 @@ HOME_JOINTS_RAD = np.deg2rad(HOME_JOINTS_DEG)
 @dataclass
 class HOSASConfig:
     """Configuration for Thrustmaster SOL-R2 HOSAS mapping."""
+
     # Speed limits
-    max_speed_linear: float = 0.25    # m/s max TCP translation speed
-    max_speed_angular: float = 0.50   # rad/s max TCP rotation speed
-    acceleration: float = 0.5         # TCP acceleration (m/s^2)
-    watchdog_time: float = 0.1        # Safety watchdog for speedL (s)
+    max_speed_linear: float = 0.25  # m/s max TCP translation speed
+    max_speed_angular: float = 0.50  # rad/s max TCP rotation speed
+    acceleration: float = 0.5  # TCP acceleration (m/s^2)
+    watchdog_time: float = 0.1  # Safety watchdog for speedL (s)
 
     # Deadzone for all axes
     deadzone: float = 0.05
@@ -83,7 +84,7 @@ class JoystickAgent(Agent):
       }
     """
 
-    # Flag for env.py / run_env.py to detect this is a velocity-mode agent
+    # Flag for env.py / run_env.py to detect velocity-mode agent
     control_mode = "cartesian_velocity"
 
     def __init__(
@@ -114,7 +115,9 @@ class JoystickAgent(Agent):
 
         # Start background thread for joystick reading
         self._running = True
-        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread = threading.Thread(
+            target=self._read_loop, daemon=True
+        )
         self._thread.start()
 
     # ------------------------------------------------------------------
@@ -124,11 +127,13 @@ class JoystickAgent(Agent):
         return 0.0 if abs(val) < self.config.deadzone else val
 
     def _get_gain(self, joy) -> float:
-        """Read the base slider to compute speed gain [min_gain, 1.0]."""
+        """Read the base slider to compute speed gain."""
         try:
             val = joy.get_axis(3)  # Slider axis
             norm = (-val + 1) / 2.0
-            return self.config.min_gain + (norm * (1.0 - self.config.min_gain))
+            return self.config.min_gain + (
+                norm * (1.0 - self.config.min_gain)
+            )
         except Exception:
             return 1.0
 
@@ -142,7 +147,7 @@ class JoystickAgent(Agent):
             num_joys = pygame.joystick.get_count()
             if num_joys < 2:
                 print(
-                    f"[HOSAS] Need 2 joysticks for HOSAS, found {num_joys}. "
+                    f"[HOSAS] Need 2 joysticks, found {num_joys}. "
                     f"Waiting..."
                 )
                 pygame.joystick.quit()
@@ -151,7 +156,9 @@ class JoystickAgent(Agent):
                 continue
 
             joy_left = pygame.joystick.Joystick(self._left_index)
-            joy_right = pygame.joystick.Joystick(self._right_index)
+            joy_right = pygame.joystick.Joystick(
+                self._right_index
+            )
             joy_left.init()
             joy_right.init()
             print(f"[HOSAS] Left:  {joy_left.get_name()}")
@@ -162,13 +169,21 @@ class JoystickAgent(Agent):
                     pygame.event.pump()
 
                     # Read all axes
-                    left_axes = np.zeros(max(6, joy_left.get_numaxes()))
+                    left_axes = np.zeros(
+                        max(6, joy_left.get_numaxes())
+                    )
                     for i in range(joy_left.get_numaxes()):
-                        left_axes[i] = self._apply_deadzone(joy_left.get_axis(i))
+                        left_axes[i] = self._apply_deadzone(
+                            joy_left.get_axis(i)
+                        )
 
-                    right_axes = np.zeros(max(6, joy_right.get_numaxes()))
+                    right_axes = np.zeros(
+                        max(6, joy_right.get_numaxes())
+                    )
                     for i in range(joy_right.get_numaxes()):
-                        right_axes[i] = self._apply_deadzone(joy_right.get_axis(i))
+                        right_axes[i] = self._apply_deadzone(
+                            joy_right.get_axis(i)
+                        )
 
                     # Read buttons
                     left_buttons = [
@@ -177,23 +192,35 @@ class JoystickAgent(Agent):
                     ]
                     right_buttons = [
                         joy_right.get_button(i)
-                        for i in range(joy_right.get_numbuttons())
+                        for i in range(
+                            joy_right.get_numbuttons()
+                        )
                     ]
 
                     # Gripper from left mini-stick Y
                     mini_y_idx = self.config.mini_stick_y_axis
                     grip_d = 0.0
                     if mini_y_idx < joy_left.get_numaxes():
-                        val = self._apply_deadzone(joy_left.get_axis(mini_y_idx))
+                        val = self._apply_deadzone(
+                            joy_left.get_axis(mini_y_idx)
+                        )
                         if val != 0:
-                            # Mini-stick up (< 0) = close, down (> 0) = open
-                            grip_d = -val * self.config.gripper_step
+                            # up (< 0) = close, down (> 0) = open
+                            grip_d = (
+                                -val * self.config.gripper_step
+                            )
 
                     # Skill detection
                     skill = None
-                    if len(right_buttons) > 2 and right_buttons[2]:
+                    if (
+                        len(right_buttons) > 2
+                        and right_buttons[2]
+                    ):
                         skill = "reorient"
-                    elif len(right_buttons) > 3 and right_buttons[3]:
+                    elif (
+                        len(right_buttons) > 3
+                        and right_buttons[3]
+                    ):
                         skill = "home"
 
                     # Compute gains
@@ -214,17 +241,20 @@ class JoystickAgent(Agent):
                     time.sleep(0.005)  # ~200 Hz polling
 
             except Exception as e:
-                print(f"[HOSAS] Device lost ({e}), will reconnect...")
+                print(
+                    f"[HOSAS] Device lost ({e}), reconnecting..."
+                )
                 time.sleep(1.0)
 
     # ------------------------------------------------------------------
     # Agent interface
     # ------------------------------------------------------------------
     def act(self, obs: Dict[str, Any]) -> Dict[str, Any]:
-        """Return a velocity command dict (not a joint-position array).
+        """Return a velocity command dict.
 
-        The control loop (run_env.py) checks the return type and routes
-        velocity commands to robot.command_cartesian_velocity() -> speedL.
+        The control loop (run_env.py) checks the return type and
+        routes velocity commands to
+        robot.command_cartesian_velocity() -> speedL.
         """
         with self._lock:
             left_axes = self._left_axes.copy()
@@ -245,24 +275,40 @@ class JoystickAgent(Agent):
         cfg = self.config
         vel = np.zeros(6)
 
-        # Left stick: translation X, Y (adjust signs for your mounting)
-        vel[0] = -left_axes[1] * cfg.max_speed_linear * gain_l    # Forward/Back
-        vel[1] = -left_axes[0] * cfg.max_speed_linear * gain_l    # Left/Right
+        # Left stick: translation X, Y
+        vel[0] = (
+            -left_axes[1] * cfg.max_speed_linear * gain_l
+        )  # Fwd/Back
+        vel[1] = (
+            -left_axes[0] * cfg.max_speed_linear * gain_l
+        )  # Left/Right
 
         # Right mini-stick: translation Z
         mini_y_idx = cfg.mini_stick_y_axis
         if mini_y_idx < len(right_axes):
-            vel[2] = -right_axes[mini_y_idx] * cfg.max_speed_linear * gain_l  # Up/Down
+            vel[2] = (
+                -right_axes[mini_y_idx]
+                * cfg.max_speed_linear
+                * gain_l
+            )  # Up/Down
 
         # Right stick: rotation
-        vel[3] =  right_axes[0] * cfg.max_speed_angular * gain_r   # Roll  (Rx)
-        vel[4] = -right_axes[1] * cfg.max_speed_angular * gain_r   # Pitch (Ry)
+        vel[3] = (
+            right_axes[0] * cfg.max_speed_angular * gain_r
+        )  # Roll
+        vel[4] = (
+            -right_axes[1] * cfg.max_speed_angular * gain_r
+        )  # Pitch
         if len(right_axes) > 2:
-            vel[5] = -right_axes[2] * cfg.max_speed_angular * gain_r  # Yaw (Rz)
+            vel[5] = (
+                -right_axes[2] * cfg.max_speed_angular * gain_r
+            )  # Yaw
 
         if self._verbose and np.any(np.abs(vel) > 0.01):
-            print(f"[HOSAS] vel={vel}, grip_d={grip_d:.3f}, "
-                  f"gain_L={gain_l:.2f}, gain_R={gain_r:.2f}")
+            print(
+                f"[HOSAS] vel={vel}, grip_d={grip_d:.3f}, "
+                f"gain_L={gain_l:.2f}, gain_R={gain_r:.2f}"
+            )
 
         return {
             "type": "velocity",

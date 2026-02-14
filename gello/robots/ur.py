@@ -8,7 +8,9 @@ from gello.robots.robot import Robot
 class URRobot(Robot):
     """A class representing a UR robot."""
 
-    def __init__(self, robot_ip: str = "192.168.1.10", no_gripper: bool = False):
+    def __init__(
+        self, robot_ip: str = "192.168.1.10", no_gripper: bool = False
+    ):
         import rtde_control
         import rtde_receive
 
@@ -49,7 +51,9 @@ class URRobot(Robot):
 
         time.sleep(0.01)
         gripper_pos = self.gripper.get_current_position()
-        assert 0 <= gripper_pos <= 255, "Gripper position must be between 0 and 255"
+        assert (
+            0 <= gripper_pos <= 255
+        ), "Gripper position must be between 0 and 255"
         return gripper_pos / 255
 
     def get_joint_state(self) -> np.ndarray:
@@ -70,7 +74,7 @@ class URRobot(Robot):
         """Command the leader robot to a given state via servoJ.
 
         Args:
-            joint_state (np.ndarray): The state to command the leader robot to.
+            joint_state (np.ndarray): The state to command the robot to.
         """
         velocity = 0.5
         acceleration = 0.5
@@ -81,7 +85,12 @@ class URRobot(Robot):
         robot_joints = joint_state[:6]
         t_start = self.robot.initPeriod()
         self.robot.servoJ(
-            robot_joints, velocity, acceleration, dt, lookahead_time, gain
+            robot_joints,
+            velocity,
+            acceleration,
+            dt,
+            lookahead_time,
+            gain,
         )
         if self._use_gripper:
             gripper_pos = joint_state[-1] * 255
@@ -95,20 +104,30 @@ class URRobot(Robot):
         time_running: float = 0.1,
         gripper_vel: float = 0.0,
     ) -> None:
-        """Command TCP velocity via speedL. UR handles IK internally.
+        """Command TCP velocity via speedL.
+
+        UR handles IK internally.
 
         Args:
-            velocity: 6D Cartesian velocity [vx, vy, vz, wx, wy, wz] in base frame.
+            velocity: 6D Cartesian velocity [vx, vy, vz, wx, wy, wz]
+                in base frame.
             acceleration: TCP acceleration (m/s^2).
-            time_running: Time the command is active before safety stop (watchdog).
-            gripper_vel: Gripper velocity in normalized [0,1] range per step.
-                         Positive = close, negative = open.
+            time_running: Time the command is active before safety
+                stop (watchdog).
+            gripper_vel: Gripper velocity in normalized [0,1] range
+                per step. Positive = close, negative = open.
         """
-        assert len(velocity) == 6, f"Expected 6D velocity, got {len(velocity)}"
-        self.robot.speedL(list(velocity), acceleration, time=time_running)
+        assert len(velocity) == 6, (
+            f"Expected 6D velocity, got {len(velocity)}"
+        )
+        self.robot.speedL(
+            list(velocity), acceleration, time=time_running
+        )
         if self._use_gripper and abs(gripper_vel) > 0.001:
             current_grip = self._get_gripper_pos()
-            new_grip = max(0.0, min(1.0, current_grip + gripper_vel))
+            new_grip = max(
+                0.0, min(1.0, current_grip + gripper_vel)
+            )
             self.gripper.move(int(new_grip * 255), 255, 10)
 
     def speed_stop(self) -> None:
@@ -119,7 +138,7 @@ class URRobot(Robot):
         """Check if the robot is in freedrive mode.
 
         Returns:
-            bool: True if the robot is in freedrive mode, False otherwise.
+            bool: True if the robot is in freedrive mode.
         """
         return self._free_drive
 
@@ -127,7 +146,7 @@ class URRobot(Robot):
         """Set the freedrive mode of the robot.
 
         Args:
-            enable (bool): True to enable freedrive mode, False to disable it.
+            enable (bool): True to enable, False to disable.
         """
         if enable and not self._free_drive:
             self._free_drive = True

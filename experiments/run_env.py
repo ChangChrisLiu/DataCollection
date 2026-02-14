@@ -14,15 +14,19 @@ import tyro
 from gello.env import RobotEnv
 from gello.robots.robot import PrintRobot
 from gello.utils.launch_utils import instantiate_from_dict
-from gello.zmq_core.robot_node import ZMQClientRobot
 from gello.zmq_core.camera_node import ZMQClientCamera
+from gello.zmq_core.robot_node import ZMQClientRobot
 
 
 def print_color(*args, color=None, attrs=(), **kwargs):
     try:
         import termcolor
+
         if len(args) > 0:
-            args = tuple(termcolor.colored(arg, color=color, attrs=attrs) for arg in args)
+            args = tuple(
+                termcolor.colored(arg, color=color, attrs=attrs)
+                for arg in args
+            )
     except ImportError:
         pass
     print(*args, **kwargs)
@@ -38,11 +42,11 @@ def angdiff(a, b):
 class Args:
     agent: str = "gello"
     robot_port: int = 6001
-    gello_server_port: int = 6000       # T3 agent server port (gello only)
-    wrist_camera_port: int = 5000       # T2 camera PUB port (RealSense)
-    base_camera_port: int = 5001        # T2 camera PUB port (OAK-D)
+    gello_server_port: int = 6000  # T3 agent server port (gello only)
+    wrist_camera_port: int = 5000  # T2 camera PUB port (RealSense)
+    base_camera_port: int = 5001  # T2 camera PUB port (OAK-D)
     hostname: str = "127.0.0.1"
-    robot_type: str = "ur5"             # for spacemouse IK model
+    robot_type: str = "ur5"  # for spacemouse IK model
     hz: int = 100
     start_joints: Optional[Tuple[float, ...]] = None
 
@@ -50,7 +54,7 @@ class Args:
     use_save_interface: bool = False
     data_dir: str = "~/bc_data"
     verbose: bool = False
-    no_cameras: bool = False            # skip camera connections
+    no_cameras: bool = False  # skip camera connections
 
     def __post_init__(self):
         if self.start_joints is not None:
@@ -65,7 +69,9 @@ def main(args):
         robot_client = PrintRobot(8, dont_print=True)
         camera_clients = {}
     else:
-        robot_client = ZMQClientRobot(port=args.robot_port, host=args.hostname)
+        robot_client = ZMQClientRobot(
+            port=args.robot_port, host=args.hostname
+        )
 
         if args.no_cameras:
             camera_clients = {}
@@ -73,18 +79,26 @@ def main(args):
             # RealSense wrist: 424x240, OAK-D base: 416x240
             camera_clients = {
                 "wrist": ZMQClientCamera(
-                    port=args.wrist_camera_port, host=args.hostname, camera_name="wrist",
+                    port=args.wrist_camera_port,
+                    host=args.hostname,
+                    camera_name="wrist",
                     dummy_shape_rgb=(240, 424, 3),
                     dummy_shape_depth=(240, 424, 1),
                 ),
                 "base": ZMQClientCamera(
-                    port=args.base_camera_port, host=args.hostname, camera_name="base",
+                    port=args.base_camera_port,
+                    host=args.hostname,
+                    camera_name="base",
                     dummy_shape_rgb=(240, 416, 3),
                     dummy_shape_depth=(240, 416, 1),
                 ),
             }
 
-    env = RobotEnv(robot_client, control_rate_hz=args.hz, camera_dict=camera_clients)
+    env = RobotEnv(
+        robot_client,
+        control_rate_hz=args.hz,
+        camera_dict=camera_clients,
+    )
 
     # -----------------------------------------------------------------
     # 2. Create agent
@@ -124,12 +138,14 @@ def main(args):
     agent = instantiate_from_dict(agent_cfg)
 
     # -----------------------------------------------------------------
-    # 3. Move to start position (only for gello — others start in-place)
+    # 3. Move to start position (only for gello -- others start in-place)
     # -----------------------------------------------------------------
     if args.agent == "gello":
         # Default UR5e reset pose (6 joints + 1 gripper)
         if args.start_joints is None:
-            reset_joints = np.deg2rad([0, -90, 90, -90, -90, 0, 0])
+            reset_joints = np.deg2rad(
+                [0, -90, 90, -90, -90, 0, 0]
+            )
         else:
             reset_joints = np.array(args.start_joints)
 
@@ -140,7 +156,9 @@ def main(args):
             steps = min(int(max_delta / 0.01), 100)
             if steps > 0:
                 print("Moving to start position...")
-                for jnt in np.linspace(curr_joints, reset_joints, steps):
+                for jnt in np.linspace(
+                    curr_joints, reset_joints, steps
+                ):
                     env.step(jnt)
                     time.sleep(0.001)
                 print("Done.")
@@ -165,13 +183,19 @@ def main(args):
             print("Large delta detected, soft-aligning...")
             current = joints.copy()
             target = start_pos
-            steps = min(int(np.abs(angdiff(current, target)).max() / 0.01), 300)
+            steps = min(
+                int(
+                    np.abs(angdiff(current, target)).max() / 0.01
+                ),
+                300,
+            )
             for jnt in np.linspace(current, target, steps):
                 env.step(jnt)
                 time.sleep(0.002)
 
         assert len(start_pos) == len(joints), (
-            f"Agent output dim = {len(start_pos)}, but env dim = {len(joints)}"
+            f"Agent output dim = {len(start_pos)}, "
+            f"but env dim = {len(joints)}"
         )
 
         # Fine alignment
@@ -192,24 +216,32 @@ def main(args):
         joints = obs["joint_positions"]
         action = agent.act(obs)
         if (action - joints > 0.5).any():
-            print("WARNING: Action jump too large after alignment!")
+            print(
+                "WARNING: Action jump too large after alignment!"
+            )
             joint_index = np.where(action - joints > 0.8)
             for j in joint_index:
                 print(
                     f"Joint [{j}], leader: {action[j]}, "
-                    f"follower: {joints[j]}, diff: {action[j] - joints[j]}"
+                    f"follower: {joints[j]}, "
+                    f"diff: {action[j] - joints[j]}"
                 )
             exit()
 
     # -----------------------------------------------------------------
     # 4. Run control loop
     # -----------------------------------------------------------------
-    from gello.utils.control_utils import SaveInterface, run_control_loop
+    from gello.utils.control_utils import (
+        SaveInterface,
+        run_control_loop,
+    )
 
     save_interface = None
     if args.use_save_interface:
         save_interface = SaveInterface(
-            data_dir=args.data_dir, agent_name=args.agent, expand_user=True
+            data_dir=args.data_dir,
+            agent_name=args.agent,
+            expand_user=True,
         )
 
     run_control_loop(env, agent, save_interface, use_colors=True)

@@ -13,11 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # python-version: ["3.8", "3.9", "3.10", "3.11"]
-        python-version: ["3.8", "3.10"]
+        python-version: ["3.10", "3.11"]
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -28,8 +29,6 @@ jobs:
           pip install -r requirements_dev.txt
           pip install -r requirements.txt
           pip install -e .
-          git submodule init
-          git submodule update
           pip install third_party/DynamixelSDK/python
 
       - name: Black
