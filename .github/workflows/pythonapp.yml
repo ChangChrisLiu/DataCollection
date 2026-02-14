@@ -33,6 +33,7 @@ jobs:
 
       - name: Black
         run: |
+          black --diff gello || true
           black --check gello
       - name: flake8
         run: |
