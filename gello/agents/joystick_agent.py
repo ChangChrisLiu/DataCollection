@@ -10,7 +10,7 @@ Hardware Mapping (Thrustmaster SOL-R2 HOSAS):
     Axis 0 (X) + Axis 1 (Y) -> TCP translation X/Y
     Axis 3 (slider)          -> speed gain multiplier
     Mini-stick Y             -> gripper open/close
-    Button 0 (trigger)       -> toggle data recording
+    Button 0 (trigger)       -> skill trigger (dual-dataset pipeline)
 
   Right Stick:
     Axis 0 (X) + Axis 1 (Y) -> TCP rotation Rx/Ry (roll/pitch)
@@ -109,9 +109,10 @@ class JoystickAgent(Agent):
         self._left_buttons = []
         self._right_buttons = []
         self._gripper_delta = 0.0
-        self._skill_request = None  # "home", "reorient", or None
+        self._skill_request = None  # "home", "reorient", "trigger", or None
         self._gain_left = 1.0
         self._gain_right = 1.0
+        self._trigger_prev = False  # Edge detection for Button 0
 
         # Start background thread for joystick reading
         self._running = True
@@ -188,9 +189,15 @@ class JoystickAgent(Agent):
 
                     # Skill detection
                     skill = None
-                    if len(right_buttons) > 2 and right_buttons[2]:
+                    # Left trigger (Button 0): skill trigger with edge detection
+                    trigger_now = len(left_buttons) > 0 and left_buttons[0]
+                    if trigger_now and not self._trigger_prev:
+                        skill = "trigger"
+                    self._trigger_prev = trigger_now
+
+                    if skill is None and len(right_buttons) > 2 and right_buttons[2]:
                         skill = "reorient"
-                    elif len(right_buttons) > 3 and right_buttons[3]:
+                    elif skill is None and len(right_buttons) > 3 and right_buttons[3]:
                         skill = "home"
 
                     # Compute gains

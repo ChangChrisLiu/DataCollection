@@ -16,8 +16,8 @@ class ZMQClientCamera(CameraDriver):
         port: int,
         host: str,
         camera_name: str,
-        dummy_shape_rgb: Tuple[int, int, int] = (240, 424, 3),
-        dummy_shape_depth: Tuple[int, int, int] = (240, 424, 1),
+        dummy_shape_rgb: Tuple[int, int, int] = (720, 1280, 3),
+        dummy_shape_depth: Tuple[int, int, int] = (720, 1280, 1),
     ):
         print(
             f"ZMQClientCamera ({camera_name}): "
@@ -29,15 +29,10 @@ class ZMQClientCamera(CameraDriver):
         self._context = zmq.Context()
         dummy_ts = 0.0
 
-        # OAK-D base camera uses 416x240, RealSense wrist uses 424x240
-        if camera_name == "base":
-            dummy_img = np.zeros((240, 416, 3), dtype=np.uint8)
-            dummy_depth = np.zeros((240, 416, 1), dtype=np.uint16)
-            print("   (OAK-D dummy frames set to 416x240)")
-        else:
-            dummy_img = np.zeros(dummy_shape_rgb, dtype=np.uint8)
-            dummy_depth = np.zeros(dummy_shape_depth, dtype=np.uint16)
-            print("   (RealSense dummy frames set to 424x240)")
+        # Both cameras now use 1280x720
+        dummy_img = np.zeros(dummy_shape_rgb, dtype=np.uint8)
+        dummy_depth = np.zeros(dummy_shape_depth, dtype=np.uint16)
+        print(f"   (dummy frames set to {dummy_shape_rgb})")
 
         self.latest_payload = (dummy_ts, dummy_img, dummy_depth)
         self.lock = threading.Lock()

@@ -1,22 +1,32 @@
 # experiments/launch_nodes.py
-"""Robot server (T1) — launches a ZMQ server wrapping a robot driver.
+"""Robot server (T1) — launches ZMQ servers wrapping a robot driver.
+
+Launches two servers on real robots:
+  - Port 6001: Full control server (servoJ, speedL, moveL, speed_stop, etc.)
+  - Port 6002: Read-only observation server (get_observations, get_tcp_pose_raw)
+
+The dual-port architecture allows observation polling during blocking moveL
+calls for skill execution. Both servers wrap the same robot instance but
+access different RTDE interfaces (Control vs Receive), which is thread-safe.
 
 Supported robots: ur, sim_ur, panda, sim_panda, bimanual_ur, print/none
 """
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 import tyro
 
 from gello.robots.robot import BimanualRobot, PrintRobot
-from gello.zmq_core.robot_node import ZMQServerRobot
+from gello.zmq_core.robot_node import ZMQObsServerRobot, ZMQServerRobot
 
 
 @dataclass
 class Args:
     robot: str = "ur"
     robot_port: int = 6001
+    obs_port: int = 6002  # Read-only observation server port
     hostname: str = "127.0.0.1"
     robot_ip: str = "10.125.145.89"
 
@@ -82,8 +92,19 @@ def launch_robot_server(args: Args):
                 f"Choose from: sim_ur, sim_panda, ur, panda, bimanual_ur, none"
             )
 
+        # Launch primary control server (port 6001)
         server = ZMQServerRobot(robot, port=port, host=args.hostname)
-        print(f"Starting robot server on port {port}")
+
+        # Launch read-only observation server (port 6002)
+        obs_server = ZMQObsServerRobot(robot, port=args.obs_port, host=args.hostname)
+        obs_thread = threading.Thread(target=obs_server.serve, daemon=True)
+        obs_thread.start()
+        print(
+            f"Observation server started on port {args.obs_port} "
+            f"(read-only, for skill execution)"
+        )
+
+        print(f"Starting robot control server on port {port}")
         server.serve()
 
 

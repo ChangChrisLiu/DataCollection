@@ -40,9 +40,9 @@ class RealSenseCamera(CameraDriver):
         else:
             config.enable_device(device_id)
 
-        # RGB: 424x240 @ 30Hz, Depth: 480x270 @ 30Hz
-        rgb_width, rgb_height = 424, 240
-        dep_width, dep_height = 480, 270
+        # RGB: 1280x720 @ 30Hz, Depth: 1280x720 @ 30Hz
+        rgb_width, rgb_height = 1280, 720
+        dep_width, dep_height = 1280, 720
         fps = 30
 
         try:

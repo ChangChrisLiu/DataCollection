@@ -74,21 +74,21 @@ def main(args):
         if args.no_cameras:
             camera_clients = {}
         else:
-            # RealSense wrist: 424x240, OAK-D base: 416x240
+            # Both cameras at 1280x720
             camera_clients = {
                 "wrist": ZMQClientCamera(
                     port=args.wrist_camera_port,
                     host=args.hostname,
                     camera_name="wrist",
-                    dummy_shape_rgb=(240, 424, 3),
-                    dummy_shape_depth=(240, 424, 1),
+                    dummy_shape_rgb=(720, 1280, 3),
+                    dummy_shape_depth=(720, 1280, 1),
                 ),
                 "base": ZMQClientCamera(
                     port=args.base_camera_port,
                     host=args.hostname,
                     camera_name="base",
-                    dummy_shape_rgb=(240, 416, 3),
-                    dummy_shape_depth=(240, 416, 1),
+                    dummy_shape_rgb=(720, 1280, 3),
+                    dummy_shape_depth=(720, 1280, 1),
                 ),
             }
 

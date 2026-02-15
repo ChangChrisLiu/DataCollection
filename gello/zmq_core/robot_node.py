@@ -51,6 +51,12 @@ class ZMQServerRobot:
                     result = self._robot.speed_stop()
                 elif method == "get_observations":
                     result = self._robot.get_observations()
+                elif method == "get_tcp_pose_raw":
+                    result = self._robot.get_tcp_pose_raw()
+                elif method == "move_linear":
+                    result = self._robot.move_linear(**args)
+                elif method == "set_freedrive_mode":
+                    result = self._robot.set_freedrive_mode(**args)
                 else:
                     result = {"error": "Invalid method"}
                     print(result)
@@ -61,6 +67,70 @@ class ZMQServerRobot:
                 self._socket.send(pickle.dumps(result))
             except zmq.Again:
                 # Timeout occurred - don't spam the console
+                pass
+
+    def stop(self) -> None:
+        """Signal the server to stop serving."""
+        self._stop_event.set()
+
+
+class ZMQObsServerRobot:
+    """Read-only ZMQ server for observation polling during skill execution.
+
+    This server wraps the same robot instance as ZMQServerRobot but only
+    dispatches read-only methods. It runs on a separate port (e.g. 6002)
+    so that observation queries remain responsive even when the primary
+    server is blocked on a moveL call.
+
+    Thread safety: This server only calls RTDEReceiveInterface methods
+    (get_observations, get_joint_state, get_tcp_pose_raw) while the
+    primary server calls RTDEControlInterface methods (moveL, servoJ).
+    These are independent C++ objects with separate TCP connections,
+    so no locking is needed.
+    """
+
+    def __init__(
+        self,
+        robot: Robot,
+        port: int = 6002,
+        host: str = "127.0.0.1",
+    ):
+        self._robot = robot
+        self._context = zmq.Context()
+        self._socket = self._context.socket(zmq.REP)
+        addr = f"tcp://{host}:{port}"
+        print(f"Obs Server (read-only) Binding to {addr}")
+        self._socket.bind(addr)
+        self._stop_event = threading.Event()
+
+    def serve(self) -> None:
+        """Serve read-only robot observations over ZMQ."""
+        self._socket.setsockopt(zmq.RCVTIMEO, 1000)
+        while not self._stop_event.is_set():
+            try:
+                message = self._socket.recv()
+                request = pickle.loads(message)
+
+                method = request.get("method")
+                result: Any
+
+                # Only allow read-only methods
+                if method == "get_observations":
+                    result = self._robot.get_observations()
+                elif method == "get_joint_state":
+                    result = self._robot.get_joint_state()
+                elif method == "get_tcp_pose_raw":
+                    result = self._robot.get_tcp_pose_raw()
+                elif method == "num_dofs":
+                    result = self._robot.num_dofs()
+                else:
+                    result = {
+                        "error": f"Method '{method}' not allowed "
+                        f"on read-only obs server"
+                    }
+
+                self._socket.send(pickle.dumps(result))
+            except zmq.Again:
                 pass
 
     def stop(self) -> None:
@@ -143,6 +213,55 @@ class ZMQClientRobot(Robot):
     def speed_stop(self) -> None:
         """Stop speedL motion through ZMQ."""
         request = {"method": "speed_stop"}
+        self._socket.send(pickle.dumps(request))
+        pickle.loads(self._socket.recv())
+
+    def get_tcp_pose_raw(self) -> np.ndarray:
+        """Get current TCP pose [x,y,z,rx,ry,rz] through ZMQ.
+
+        Returns:
+            np.ndarray: (6,) TCP pose in base frame (UR rotation vector format).
+        """
+        request = {"method": "get_tcp_pose_raw"}
+        self._socket.send(pickle.dumps(request))
+        result = pickle.loads(self._socket.recv())
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(result["error"])
+        return result
+
+    def move_linear(
+        self,
+        pose: np.ndarray,
+        speed: float = 0.1,
+        accel: float = 0.5,
+    ) -> None:
+        """Move TCP linearly to target pose (blocking) through ZMQ.
+
+        This call blocks until the UR moveL motion completes.
+
+        Args:
+            pose: (6,) target [x,y,z,rx,ry,rz] in base frame.
+            speed: TCP speed in m/s.
+            accel: TCP acceleration in m/s^2.
+        """
+        request = {
+            "method": "move_linear",
+            "args": {"pose": pose, "speed": speed, "accel": accel},
+        }
+        self._socket.send(pickle.dumps(request))
+        # This will block until moveL completes on the server side
+        pickle.loads(self._socket.recv())
+
+    def set_freedrive_mode(self, enable: bool) -> None:
+        """Enable or disable freedrive mode through ZMQ.
+
+        Args:
+            enable: True to enable freedrive, False to disable.
+        """
+        request = {
+            "method": "set_freedrive_mode",
+            "args": {"enable": enable},
+        }
         self._socket.send(pickle.dumps(request))
         pickle.loads(self._socket.recv())
 

@@ -1,6 +1,7 @@
 from typing import Dict
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from gello.robots.robot import Robot
 
@@ -51,6 +52,32 @@ class URRobot(Robot):
         gripper_pos = self.gripper.get_current_position()
         assert 0 <= gripper_pos <= 255, "Gripper position must be between 0 and 255"
         return gripper_pos / 255
+
+    def get_tcp_pose_raw(self) -> np.ndarray:
+        """Get the current TCP pose as [x, y, z, rx, ry, rz] (UR rotation vector).
+
+        Returns:
+            np.ndarray: (6,) TCP pose in base frame.
+        """
+        return np.array(self.r_inter.getActualTCPPose())
+
+    def move_linear(
+        self,
+        pose: np.ndarray,
+        speed: float = 0.1,
+        accel: float = 0.5,
+    ) -> None:
+        """Move the TCP linearly to a target pose (blocking).
+
+        Uses UR moveL which handles IK internally. This call blocks until
+        the motion is complete or an error occurs.
+
+        Args:
+            pose: (6,) target pose [x, y, z, rx, ry, rz] in base frame.
+            speed: TCP speed in m/s.
+            accel: TCP acceleration in m/s^2.
+        """
+        self.robot.moveL(list(pose), speed, accel)
 
     def get_joint_state(self) -> np.ndarray:
         """Get the current state of the leader robot.
@@ -147,11 +174,20 @@ class URRobot(Robot):
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         joints = self.get_joint_state()
-        pos_quat = np.zeros(7)
         gripper_pos = np.array([joints[-1]])
+
+        # TCP pose: convert UR rotation vector to [x,y,z,qx,qy,qz,qw]
+        tcp_raw = self.r_inter.getActualTCPPose()  # [x,y,z,rx,ry,rz]
+        pos = np.array(tcp_raw[:3])
+        quat = Rotation.from_rotvec(tcp_raw[3:6]).as_quat()  # [qx,qy,qz,qw]
+        pos_quat = np.concatenate([pos, quat])
+
+        # Joint velocities from RTDE (6D, excludes gripper)
+        joint_vel = np.array(self.r_inter.getActualQd())
+
         return {
             "joint_positions": joints,
-            "joint_velocities": joints,
+            "joint_velocities": joint_vel,
             "ee_pos_quat": pos_quat,
             "gripper_position": gripper_pos,
         }

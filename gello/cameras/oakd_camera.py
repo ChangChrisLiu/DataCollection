@@ -23,8 +23,8 @@ class OAKDCamera(CameraDriver):
     """OAK-D Pro camera driver using DepthAI.
 
     Returns (when img_size=None):
-        color: (240, 416, 3) uint8, RGB
-        depth: (240, 416, 1) uint16, in millimeters (aligned to RGB)
+        color: (720, 1280, 3) uint8, RGB
+        depth: (720, 1280, 1) uint16, in millimeters (aligned to RGB)
     """
 
     def __repr__(self) -> str:
@@ -48,11 +48,11 @@ class OAKDCamera(CameraDriver):
         self._fps = fps
         self._depth_in_mm = depth_millimeters
 
-        # RGB width 424 is not a multiple of 16. Use 416 instead.
-        rgb_width, rgb_height = 416, 240
-        dep_width, dep_height = 480, 270
+        # RGB and depth both at 1280x720 @ 30Hz
+        rgb_width, rgb_height = 1280, 720
+        dep_width, dep_height = 1280, 720
 
-        # Both streams output at 416x240
+        # Both streams output at 1280x720
         self._target_rgb_size = (rgb_width, rgb_height)  # (W, H)
         self._target_depth_size = (rgb_width, rgb_height)  # (W, H)
 

@@ -1,9 +1,11 @@
 # Core dependencies (installable on any system)
 numpy
 omegaconf==2.3.0
+opencv-python
 Pillow
 pygame
 pyzmq
+scipy
 setuptools
 termcolor
 tyro
