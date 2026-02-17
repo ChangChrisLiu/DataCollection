@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Protocol, Tuple
+from typing import Dict, Optional, Protocol, Tuple
 
 import numpy as np
 
@@ -25,6 +25,21 @@ class CameraDriver(Protocol):
         Returns:
             np.ndarray: The color image.
             np.ndarray: The depth image.
+        """
+
+    def get_settings(self) -> Dict[str, object]:
+        """Snapshot current camera settings (exposure, WB, gain, etc.).
+
+        Returns:
+            dict with camera-specific settings. Empty dict if unsupported.
+        """
+        return {}
+
+    def apply_settings(self, settings: Dict[str, object]) -> None:
+        """Apply previously saved camera settings.
+
+        Args:
+            settings: dict from get_settings(). Ignored if unsupported.
         """
 
 

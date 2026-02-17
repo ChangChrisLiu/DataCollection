@@ -93,15 +93,15 @@ class DatasetWriter:
 
     def save_dual_episode(
         self,
-        dataset1: List[Dict[str, Any]],
-        dataset2: List[Dict[str, Any]],
+        ds_planner: List[Dict[str, Any]],
+        ds_executor: List[Dict[str, Any]],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Path:
         """Save both datasets for a single episode.
 
         Args:
-            dataset1: VLA+Skill frames (hijacked gripper).
-            dataset2: Full VLA frames (seamless teleop+skill).
+            ds_planner: VLA planner frames (teleop + stop signals).
+            ds_executor: VLA executor frames (teleop + skill execution).
             metadata: Episode metadata from DualDatasetBuffer.
 
         Returns:
@@ -113,13 +113,13 @@ class DatasetWriter:
 
         print(f"\n[DatasetWriter] Saving episode to {episode_dir}")
 
-        # Dataset 1: VLA+Skill
-        meta1 = {**(metadata or {}), "type": "vla_skill"}
-        self.save_episode(dataset1, episode_dir, "vla_skill", meta1)
+        # Dataset A: VLA Planner (teleop + stop signals)
+        meta1 = {**(metadata or {}), "type": "vla_planner"}
+        self.save_episode(ds_planner, episode_dir, "vla_planner", meta1)
 
-        # Dataset 2: Full VLA
-        meta2 = {**(metadata or {}), "type": "vla_full"}
-        self.save_episode(dataset2, episode_dir, "vla_full", meta2)
+        # Dataset B: VLA Executor (teleop + skill execution)
+        meta2 = {**(metadata or {}), "type": "vla_executor"}
+        self.save_episode(ds_executor, episode_dir, "vla_executor", meta2)
 
         return episode_dir
 

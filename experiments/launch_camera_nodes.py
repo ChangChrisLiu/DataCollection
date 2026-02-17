@@ -2,7 +2,7 @@
 import multiprocessing as mp
 import time
 from dataclasses import dataclass
-from typing import List
+from typing import Dict, List, Optional
 
 import tyro
 
@@ -17,6 +17,8 @@ class Args:
     hostname: str = "127.0.0.1"
     wrist_port: int = 5000
     base_port: int = 5001
+    camera_settings: Optional[str] = None
+    """Path to camera_settings.json for fixed exposure/WB/gain."""
 
 
 def launch_publisher_server_with_init(
@@ -26,6 +28,7 @@ def launch_publisher_server_with_init(
     host: str,
     camera_name: str,
     flip: bool,
+    settings: Optional[Dict] = None,
 ):
     """Async PUB/SUB camera server.
 
@@ -54,6 +57,14 @@ def launch_publisher_server_with_init(
     except Exception as e:
         print(f"{camera_name} ({camera_type}) " f"initialization failed: {e}")
         return
+
+    # Apply saved camera settings if provided
+    if settings is not None:
+        try:
+            camera_driver.apply_settings(settings)
+            print(f"{camera_name}: Applied saved camera settings.")
+        except Exception as e:
+            print(f"{camera_name}: Failed to apply settings: {e}")
 
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
@@ -85,6 +96,26 @@ def main(args: Args):
     processes: List[mp.Process] = []
     print("--- Starting async (PUB/SUB) camera servers ---")
 
+    # Load camera settings if provided
+    rs_settings = None
+    oak_settings = None
+    if args.camera_settings:
+        import json
+
+        with open(args.camera_settings, "r") as f:
+            all_settings = json.load(f)
+        rs_settings = all_settings.get("realsense")
+        oak_settings = all_settings.get("oakd")
+        print(f"Loaded camera settings from {args.camera_settings}")
+    else:
+        print("!" * 60)
+        print("  WARNING: No --camera-settings provided!")
+        print("  Cameras will use AUTO exposure/white-balance/gain.")
+        print("  This causes inconsistent lighting across episodes (OOD).")
+        print("  Run scripts/calibrate_cameras.py first, then:")
+        print("    --camera-settings camera_settings.json")
+        print("!" * 60)
+
     # Find RealSense
     try:
         realsense_ids = get_realsense_ids()
@@ -102,6 +133,7 @@ def main(args: Args):
                     args.hostname,
                     "wrist",
                     False,
+                    rs_settings,
                 ),
             )
             processes.append(rs_process)
@@ -129,6 +161,7 @@ def main(args: Args):
                     args.hostname,
                     "base",
                     True,
+                    oak_settings,
                 ),
             )
             processes.append(oak_process)

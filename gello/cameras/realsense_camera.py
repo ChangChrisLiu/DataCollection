@@ -1,6 +1,6 @@
 import os
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -69,7 +69,7 @@ class RealSenseCamera(CameraDriver):
             raise
 
         # Start pipeline
-        pipeline_profile = self._pipeline.start(config)
+        self._pipeline_profile = self._pipeline.start(config)
 
         # Create Align object (align depth to color stream)
         self._align = rs.align(rs.stream.color)
@@ -77,6 +77,91 @@ class RealSenseCamera(CameraDriver):
 
         self._flip = flip
         time.sleep(1.0)  # Wait for streams to stabilize
+
+    def _get_sensor(self, sensor_name: str):
+        """Get a sensor from the pipeline profile by name ('Color' or 'Stereo Module')."""
+        for sensor in self._pipeline_profile.get_device().query_sensors():
+            if sensor.get_info(__import__("pyrealsense2").camera_info.name) == sensor_name:
+                return sensor
+        return None
+
+    def get_settings(self) -> Dict[str, object]:
+        """Snapshot current RealSense camera settings."""
+        import pyrealsense2 as rs
+
+        settings: Dict[str, object] = {}
+        color_sensor = self._get_sensor("RGB Camera")
+        if color_sensor is None:
+            color_sensor = self._get_sensor("Color")
+        if color_sensor is not None:
+            opt = rs.option
+            for name, option in [
+                ("exposure", opt.exposure),
+                ("gain", opt.gain),
+                ("white_balance", opt.white_balance),
+                ("enable_auto_exposure", opt.enable_auto_exposure),
+                ("enable_auto_white_balance", opt.enable_auto_white_balance),
+            ]:
+                try:
+                    settings[name] = color_sensor.get_option(option)
+                except RuntimeError:
+                    pass
+
+        depth_sensor = self._get_sensor("Stereo Module")
+        if depth_sensor is not None:
+            for name, option in [
+                ("laser_power", rs.option.laser_power),
+                ("depth_units", rs.option.depth_units),
+            ]:
+                try:
+                    settings[name] = depth_sensor.get_option(option)
+                except RuntimeError:
+                    pass
+
+        return settings
+
+    def apply_settings(self, settings: Dict[str, object]) -> None:
+        """Apply saved RealSense camera settings (disables auto modes first)."""
+        import pyrealsense2 as rs
+
+        color_sensor = self._get_sensor("RGB Camera")
+        if color_sensor is None:
+            color_sensor = self._get_sensor("Color")
+        if color_sensor is not None:
+            opt = rs.option
+            # Disable auto modes first
+            if "enable_auto_exposure" in settings:
+                try:
+                    color_sensor.set_option(opt.enable_auto_exposure, 0)
+                except RuntimeError:
+                    pass
+            if "enable_auto_white_balance" in settings:
+                try:
+                    color_sensor.set_option(opt.enable_auto_white_balance, 0)
+                except RuntimeError:
+                    pass
+            # Apply fixed values
+            for name, option in [
+                ("exposure", opt.exposure),
+                ("gain", opt.gain),
+                ("white_balance", opt.white_balance),
+            ]:
+                if name in settings:
+                    try:
+                        color_sensor.set_option(option, float(settings[name]))
+                    except RuntimeError as e:
+                        print(f"RealSense: failed to set {name}: {e}")
+
+        depth_sensor = self._get_sensor("Stereo Module")
+        if depth_sensor is not None:
+            for name, option in [
+                ("laser_power", rs.option.laser_power),
+            ]:
+                if name in settings:
+                    try:
+                        depth_sensor.set_option(option, float(settings[name]))
+                    except RuntimeError as e:
+                        print(f"RealSense: failed to set {name}: {e}")
 
     def read(
         self,

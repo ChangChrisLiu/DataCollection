@@ -1,6 +1,6 @@
 # gello/cameras/oakd_camera.py
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -99,6 +99,11 @@ class OAKDCamera(CameraDriver):
         mono_left.out.link(stereo.left)
         mono_right.out.link(stereo.right)
 
+        # XLinkIn for runtime camera control
+        xin_ctrl = pipeline.create(dai.node.XLinkIn)
+        xin_ctrl.setStreamName("cam_ctrl")
+        xin_ctrl.out.link(cam_rgb.inputControl)
+
         # XLink outputs (aligned)
         xout_rgb = pipeline.create(dai.node.XLinkOut)
         xout_rgb.setStreamName("rgb")
@@ -129,7 +134,59 @@ class OAKDCamera(CameraDriver):
             name="depth", maxSize=4, blocking=False
         )
 
+        # Input queue for camera controls
+        self._q_ctrl = self._device.getInputQueue(name="cam_ctrl")
+
         time.sleep(1.0)  # Wait for streams to stabilize
+
+    def get_settings(self) -> Dict[str, object]:
+        """Snapshot current OAK-D camera settings from frame metadata."""
+        # Read a fresh frame to get current metadata
+        rgb_packet = self._q_rgb.get()
+        settings: Dict[str, object] = {}
+        try:
+            settings["exposure_us"] = rgb_packet.getExposureTime().total_seconds() * 1e6
+        except Exception:
+            pass
+        try:
+            settings["iso"] = rgb_packet.getSensitivity()
+        except Exception:
+            pass
+        try:
+            settings["color_temp_k"] = rgb_packet.getColorTemperature()
+        except Exception:
+            pass
+        try:
+            settings["lens_position"] = rgb_packet.getLensPosition()
+        except Exception:
+            pass
+        return settings
+
+    def apply_settings(self, settings: Dict[str, object]) -> None:
+        """Apply saved OAK-D camera settings via CameraControl commands."""
+        import depthai as dai
+
+        ctrl = dai.CameraControl()
+        applied = False
+
+        exposure_us = settings.get("exposure_us")
+        iso = settings.get("iso")
+        if exposure_us is not None and iso is not None:
+            ctrl.setManualExposure(int(exposure_us), int(iso))
+            applied = True
+
+        color_temp_k = settings.get("color_temp_k")
+        if color_temp_k is not None:
+            ctrl.setManualWhiteBalance(int(color_temp_k))
+            applied = True
+
+        lens_position = settings.get("lens_position")
+        if lens_position is not None:
+            ctrl.setManualFocus(int(lens_position))
+            applied = True
+
+        if applied:
+            self._q_ctrl.send(ctrl)
 
     def read(self, img_size: Optional[Tuple[int, int]] = None):  # img_size is (H, W)
         rgb_packet = self._q_rgb.tryGet()

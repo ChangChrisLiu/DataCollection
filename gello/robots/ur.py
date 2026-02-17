@@ -66,18 +66,21 @@ class URRobot(Robot):
         pose: np.ndarray,
         speed: float = 0.1,
         accel: float = 0.5,
+        asynchronous: bool = False,
     ) -> None:
-        """Move the TCP linearly to a target pose (blocking).
+        """Move the TCP linearly to a target pose.
 
-        Uses UR moveL which handles IK internally. This call blocks until
-        the motion is complete or an error occurs.
+        Uses UR moveL which handles IK internally. When asynchronous=False
+        (default), blocks until motion completes. When asynchronous=True,
+        returns immediately — use speed_stop() or stopL() to interrupt.
 
         Args:
             pose: (6,) target pose [x, y, z, rx, ry, rz] in base frame.
             speed: TCP speed in m/s.
             accel: TCP acceleration in m/s^2.
+            asynchronous: If True, return immediately (non-blocking).
         """
-        self.robot.moveL(list(pose), speed, accel)
+        self.robot.moveL(list(pose), speed, accel, 0, 0, asynchronous)
 
     def get_joint_state(self) -> np.ndarray:
         """Get the current state of the leader robot.

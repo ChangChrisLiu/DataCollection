@@ -1,13 +1,13 @@
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 from dm_control import mjcf
 from dm_control.utils.inverse_kinematics import qpos_from_site_pose
 
-from gello.agents.agent import Agent
+from gello.agents.agent import Action, Agent
 from gello.dm_control_tasks.arms.ur5e import UR5e
 
 # mujoco has a slightly different coordinate system than UR control box
@@ -86,7 +86,7 @@ class SpacemouseAgent(Agent):
         else:
             raise ValueError("Failed to open spacemouse")
 
-    def act(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
+    def act(self, obs: Dict[str, Any]) -> Action:
         import quaternion
 
         # obs: the folllow robot's current state

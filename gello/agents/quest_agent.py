@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Any, Dict
 
 import numpy as np
 import quaternion
@@ -6,7 +6,7 @@ from dm_control import mjcf
 from dm_control.utils.inverse_kinematics import qpos_from_site_pose
 from oculus_reader.reader import OculusReader
 
-from gello.agents.agent import Agent
+from gello.agents.agent import Action, Agent
 from gello.agents.spacemouse_agent import apply_transfer, mj2ur, ur2mj
 from gello.dm_control_tasks.arms.ur5e import UR5e
 
@@ -42,7 +42,7 @@ class SingleArmQuestAgent(Agent):
         self.robot_type = robot_type
         self._verbose = verbose
 
-    def act(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
+    def act(self, obs: Dict[str, Any]) -> Action:
         if self.robot_type == "ur5":
             num_dof = 6
         current_qpos = obs["joint_positions"][:num_dof]  # last one dim is the gripper
@@ -151,8 +151,8 @@ class DualArmQuestAgent(Agent):
         self.left_arm = SingleArmQuestAgent(robot_type, "l")
         self.right_arm = SingleArmQuestAgent(robot_type, "r")
 
-    def act(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
-        pass
+    def act(self, obs: Dict[str, Any]) -> Action:
+        raise NotImplementedError("DualArmQuestAgent.act() not yet implemented")
 
 
 if __name__ == "__main__":

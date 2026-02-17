@@ -5,7 +5,7 @@ from typing import Any, Dict
 import numpy as np
 import zmq
 
-from gello.agents.agent import Agent
+from gello.agents.agent import Action, Agent
 
 
 class ZMQAgent(Agent):
@@ -20,7 +20,7 @@ class ZMQAgent(Agent):
         self.num_dofs = num_dofs
         print(f"ZMQAgent: Connected (expecting {num_dofs}-DOF).")
 
-    def act(self, obs: Dict[str, Any]) -> np.ndarray:
+    def act(self, obs: Dict[str, Any]) -> Action:
         """Send obs to server and get Gello action."""
         try:
             self._socket.send(pickle.dumps(obs))

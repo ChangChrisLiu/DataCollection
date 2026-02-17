@@ -1,10 +1,10 @@
 import os
 from dataclasses import dataclass
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
-from gello.agents.agent import Agent
+from gello.agents.agent import Action, Agent
 from gello.robots.dynamixel import DynamixelRobot
 
 
@@ -146,5 +146,5 @@ class GelloAgent(Agent):
             config = PORT_CONFIG_MAP[port]
             self._robot = config.make_robot(port=port, start_joints=start_joints)
 
-    def act(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
+    def act(self, obs: Dict[str, Any]) -> Action:
         return self._robot.get_joint_state()

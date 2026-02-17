@@ -234,22 +234,30 @@ class ZMQClientRobot(Robot):
         pose: np.ndarray,
         speed: float = 0.1,
         accel: float = 0.5,
+        asynchronous: bool = False,
     ) -> None:
-        """Move TCP linearly to target pose (blocking) through ZMQ.
+        """Move TCP linearly to target pose through ZMQ.
 
-        This call blocks until the UR moveL motion completes.
+        When asynchronous=False (default), blocks until moveL completes.
+        When asynchronous=True, returns immediately — the robot moves in
+        the background. Use speed_stop() to halt the motion.
 
         Args:
             pose: (6,) target [x,y,z,rx,ry,rz] in base frame.
             speed: TCP speed in m/s.
             accel: TCP acceleration in m/s^2.
+            asynchronous: If True, return immediately (non-blocking).
         """
         request = {
             "method": "move_linear",
-            "args": {"pose": pose, "speed": speed, "accel": accel},
+            "args": {
+                "pose": pose,
+                "speed": speed,
+                "accel": accel,
+                "asynchronous": asynchronous,
+            },
         }
         self._socket.send(pickle.dumps(request))
-        # This will block until moveL completes on the server side
         pickle.loads(self._socket.recv())
 
     def set_freedrive_mode(self, enable: bool) -> None:

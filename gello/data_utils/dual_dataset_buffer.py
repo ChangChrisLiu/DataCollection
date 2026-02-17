@@ -1,71 +1,52 @@
 # gello/data_utils/dual_dataset_buffer.py
-"""Dual-dataset buffer manager for the VLA training pipeline.
+"""Dual-dataset buffer for VLA data collection pipeline.
 
-Manages the state machine (idle -> teleop -> skill -> done) and
-generates two strictly aligned datasets from a single teleoperation
-episode:
+Manages frame recording across two phases (teleop + skill execution) and
+exports two datasets from a single round of data collection:
 
-  Dataset 1 (VLA+Skill): Teleop trajectory with the final frame's
-      gripper action overwritten to SKILL_SIGNAL (2.0) as a discrete
-      skill-trigger token for VLA models.
+  Dataset A (VLA Planner):
+    Teleop frames + 3 stop-signal frames (same pose, gripper=255).
+    Teaches the VLA model WHEN to call a skill.
 
-  Dataset 2 (Full VLA): Seamless concatenation of un-hijacked teleop
-      trajectory + skill execution trajectory.
+  Dataset B (VLA Executor):
+    Teleop frames (no stop signals) + skill execution frames.
+    Teaches the VLA model the COMPLETE motion end-to-end.
 
-At 30Hz control rate (matching camera frame rate), every loop iteration
-is a frame -- no timestamp gating is needed.
+Frame format (each element in the lists):
+    {
+        "timestamp": float,
+        "joint_positions": list[float],   # 6 joint angles
+        "tcp_pose": list[float],          # [x,y,z,rx,ry,rz]
+        "gripper_pos": int,               # 0-255
+        "wrist_rgb": np.ndarray,          # (H, W, 3) uint8
+        "wrist_depth": np.ndarray,        # (H, W, 1) uint16
+        "base_rgb": np.ndarray,           # (H, W, 3) uint8
+        "base_depth": np.ndarray,         # (H, W, 1) uint16
+    }
 """
 
 import copy
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-# Out-of-bounds gripper value to signal "trigger skill" to the VLA model.
-# Valid gripper range is [0.0, 1.0], so 2.0 is clearly out-of-bounds.
-SKILL_SIGNAL = 2.0
+# Gripper value used as stop signal (out-of-range for 0-255 gripper)
+STOP_SIGNAL_GRIPPER = 255
 
 
 class DualDatasetBuffer:
-    """Buffer manager for dual-dataset generation.
-
-    Usage:
-        buffer = DualDatasetBuffer()
-        buffer.start_teleop()
-
-        # Phase 1: Teleop
-        while teleoperating:
-            obs = env.get_obs()
-            action = agent.act(obs)
-            buffer.record_teleop_frame(obs, action)
-
-        # Phase 2: Trigger
-        tcp_pose = robot.get_tcp_pose_raw()
-        buffer.trigger_skill(tcp_pose)
-
-        # Phase 3: Skill
-        for obs, pose in skill_executor.execute(tcp_pose):
-            buffer.record_skill_frame(obs, pose)
-
-        # Phase 4: Export
-        buffer.finish()
-        ds1, ds2 = buffer.export_datasets()
-    """
+    """Buffer for dual-dataset VLA data collection."""
 
     def __init__(self):
         self._teleop_frames: List[Dict[str, Any]] = []
+        self._stop_frames: List[Dict[str, Any]] = []
         self._skill_frames: List[Dict[str, Any]] = []
-        self._trigger_tcp_pose: Optional[np.ndarray] = None
-        self._trigger_frame_index: int = -1
         self._phase: str = "idle"
 
     @property
     def phase(self) -> str:
         return self._phase
-
-    @property
-    def trigger_tcp_pose(self) -> Optional[np.ndarray]:
-        return self._trigger_tcp_pose
 
     @property
     def num_teleop_frames(self) -> int:
@@ -75,146 +56,90 @@ class DualDatasetBuffer:
     def num_skill_frames(self) -> int:
         return len(self._skill_frames)
 
-    def start_teleop(self) -> None:
-        """Begin recording a new episode. Clears all buffers."""
+    def start(self) -> None:
+        """Begin a new recording round. Clears all buffers."""
         self._teleop_frames = []
+        self._stop_frames = []
         self._skill_frames = []
-        self._trigger_tcp_pose = None
-        self._trigger_frame_index = -1
         self._phase = "teleop"
-        print("[DualBuffer] Phase: TELEOP (recording started)")
+        print("[Buffer] Recording started (phase: teleop)")
 
-    def record_teleop_frame(
-        self,
-        obs: Dict[str, Any],
-        action: Any,
-    ) -> None:
-        """Record a single teleop frame (obs + action).
-
-        At 30Hz control rate, every frame should be recorded.
-
-        Args:
-            obs: Observation dict from env.get_obs().
-            action: Action dict or array from agent.act().
-        """
+    def record_teleop_frame(self, frame: Dict[str, Any]) -> None:
+        """Record a single teleop frame."""
         if self._phase != "teleop":
             return
+        self._teleop_frames.append(frame)
 
-        self._teleop_frames.append(
-            {
-                "obs": copy.deepcopy(obs),
-                "action": copy.deepcopy(action),
-            }
-        )
+    def insert_stop_signal(self, num_repeats: int = 3) -> None:
+        """Insert stop-signal frames at the end of teleop.
 
-    def trigger_skill(self, tcp_pose_raw: np.ndarray) -> None:
-        """Signal skill trigger. Captures TCP pose and transitions state.
-
-        Args:
-            tcp_pose_raw: (6,) TCP pose [x,y,z,rx,ry,rz] at trigger moment.
+        Creates num_repeats copies of the last teleop frame with gripper=255.
+        Transitions phase from teleop to skill.
         """
-        if self._phase != "teleop":
-            print(
-                f"[DualBuffer] WARNING: trigger_skill called in "
-                f"phase '{self._phase}', expected 'teleop'"
-            )
+        if self._phase != "teleop" or len(self._teleop_frames) == 0:
+            print("[Buffer] WARNING: Cannot insert stop signal (no teleop frames)")
             return
 
-        self._trigger_tcp_pose = np.array(tcp_pose_raw, dtype=np.float64)
-        self._trigger_frame_index = len(self._teleop_frames)
+        last_frame = self._teleop_frames[-1]
+        for _ in range(num_repeats):
+            stop_frame = copy.deepcopy(last_frame)
+            stop_frame["gripper_pos"] = STOP_SIGNAL_GRIPPER
+            self._stop_frames.append(stop_frame)
+
         self._phase = "skill"
         print(
-            f"[DualBuffer] Phase: SKILL (triggered at frame "
-            f"{self._trigger_frame_index}, TCP: {tcp_pose_raw[:3]})"
+            f"[Buffer] Inserted {num_repeats} stop-signal frames "
+            f"(gripper={STOP_SIGNAL_GRIPPER}). Phase: skill"
         )
 
-    def record_skill_frame(
-        self,
-        obs: Optional[Dict[str, Any]],
-        action: Any,
-    ) -> None:
-        """Record a single skill execution frame.
-
-        Args:
-            obs: Observation dict (may be None if obs polling failed).
-            action: Target pose or action from skill executor.
-        """
-        if self._phase != "skill":
+    def record_skill_frame(self, frame: Dict[str, Any]) -> None:
+        """Record a single skill-execution frame."""
+        if self._phase not in ("skill", "post_skill"):
             return
+        self._skill_frames.append(frame)
 
-        self._skill_frames.append(
-            {
-                "obs": copy.deepcopy(obs) if obs is not None else None,
-                "action": copy.deepcopy(action),
-            }
-        )
-
-    def finish(self) -> None:
-        """Mark the episode as complete."""
-        self._phase = "done"
-        print(
-            f"[DualBuffer] Phase: DONE "
-            f"(teleop: {len(self._teleop_frames)} frames, "
-            f"skill: {len(self._skill_frames)} frames)"
-        )
-
-    def export_datasets(
-        self,
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Export the two datasets.
-
-        Returns:
-            Tuple of (dataset1, dataset2):
-              dataset1 (VLA+Skill): Teleop frames with hijacked gripper signal.
-              dataset2 (Full VLA): Teleop + skill frames concatenated.
-        """
-        if self._phase != "done":
+    def finish_skill(self) -> None:
+        """Mark skill execution as complete. Recording continues for post-skill."""
+        if self._phase == "skill":
+            self._phase = "post_skill"
             print(
-                f"[DualBuffer] WARNING: export_datasets called in "
-                f"phase '{self._phase}', expected 'done'"
+                f"[Buffer] Skill done. {len(self._skill_frames)} skill frames. "
+                f"Phase: post_skill (waiting for home)"
             )
 
-        # Dataset 1: VLA+Skill (hijacked gripper)
-        dataset1 = []
-        for i, frame in enumerate(self._teleop_frames):
-            frame_copy = copy.deepcopy(frame)
-            # Hijack the last frame's gripper action
-            if i == len(self._teleop_frames) - 1 and len(self._teleop_frames) > 0:
-                action = frame_copy["action"]
-                if isinstance(action, dict):
-                    # Velocity-mode action: inject gripper signal
-                    action["gripper_vel"] = SKILL_SIGNAL
-                elif isinstance(action, np.ndarray) and len(action) > 0:
-                    # Joint-position action: overwrite last element (gripper)
-                    action[-1] = SKILL_SIGNAL
-                frame_copy["action"] = action
-            dataset1.append(frame_copy)
+    def export(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Export two datasets and reset.
 
-        # Dataset 2: Full VLA (teleop + skill, no hijack)
-        dataset2 = []
-        for frame in self._teleop_frames:
-            dataset2.append(copy.deepcopy(frame))
-        for frame in self._skill_frames:
-            dataset2.append(copy.deepcopy(frame))
+        Returns:
+            (ds_planner, ds_executor):
+              ds_planner: teleop + stop signals (VLA high-level planner)
+              ds_executor: teleop + skill frames (VLA full executor)
+        """
+        ds_planner = list(self._teleop_frames) + list(self._stop_frames)
+        ds_executor = list(self._teleop_frames) + list(self._skill_frames)
 
         print(
-            f"[DualBuffer] Exported: DS1={len(dataset1)} frames "
-            f"(last gripper={SKILL_SIGNAL}), "
-            f"DS2={len(dataset2)} frames (seamless)"
+            f"[Buffer] Exported: "
+            f"planner={len(ds_planner)} frames "
+            f"({len(self._teleop_frames)} teleop + {len(self._stop_frames)} stop), "
+            f"executor={len(ds_executor)} frames "
+            f"({len(self._teleop_frames)} teleop + {len(self._skill_frames)} skill)"
         )
-        return dataset1, dataset2
 
-    def get_episode_metadata(self) -> Dict[str, Any]:
-        """Get metadata about the current episode."""
+        # Reset
+        self._teleop_frames = []
+        self._stop_frames = []
+        self._skill_frames = []
+        self._phase = "idle"
+
+        return ds_planner, ds_executor
+
+    def get_metadata(self) -> Dict[str, Any]:
+        """Get metadata about the current recording."""
         return {
             "phase": self._phase,
             "num_teleop_frames": len(self._teleop_frames),
+            "num_stop_frames": len(self._stop_frames),
             "num_skill_frames": len(self._skill_frames),
-            "trigger_frame_index": self._trigger_frame_index,
-            "trigger_tcp_pose": (
-                self._trigger_tcp_pose.tolist()
-                if self._trigger_tcp_pose is not None
-                else None
-            ),
-            "skill_signal_value": SKILL_SIGNAL,
+            "stop_signal_value": STOP_SIGNAL_GRIPPER,
         }

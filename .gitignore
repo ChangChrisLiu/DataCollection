@@ -38,3 +38,10 @@ third_party/i2rt/
 
 # 3D Model Files
 *.stl
+
+# data collection artifacts
+episode_*/
+data/
+trajectory_data.csv
+configs/camera_settings.json
+*.pkl
