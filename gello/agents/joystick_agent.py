@@ -62,10 +62,10 @@ L_AXIS_Y = 1
 L_AXIS_SLIDER = 2  # range [0=up, 1=down], read WITHOUT calibration
 L_AXIS_MINI_Y = 4  # gripper
 
-R_AXIS_Z = 1       # right stick push/pull -> TCP Z
+R_AXIS_Z = 1  # right stick push/pull -> TCP Z
 R_AXIS_MINI_X = 3  # right mini-stick X -> TCP Ry
 R_AXIS_MINI_Y = 4  # right mini-stick Y -> TCP Rx
-R_AXIS_RZ = 5      # right twist -> TCP Rz
+R_AXIS_RZ = 5  # right twist -> TCP Rz
 
 
 @dataclass
@@ -73,9 +73,9 @@ class HOSASConfig:
     """Configuration for Thrustmaster SOL-R2 HOSAS mapping."""
 
     # Speed limits (matching joysticktst.py)
-    max_speed_linear: float = 0.05   # m/s max TCP translation speed
+    max_speed_linear: float = 0.05  # m/s max TCP translation speed
     max_speed_angular: float = 0.10  # rad/s max TCP rotation speed (Rx, Ry)
-    max_speed_rz: float = 0.25       # rad/s max TCP Rz twist speed
+    max_speed_rz: float = 0.25  # rad/s max TCP Rz twist speed
     acceleration: float = 0.5
     watchdog_time: float = 0.1
 
@@ -143,7 +143,9 @@ class JoystickAgent(Agent):
     def _apply_deadzone(self, val: float) -> float:
         return 0.0 if abs(val) < self.config.deadzone else val
 
-    def _read_axis(self, joy, axis_idx: int, is_left: bool, calibrate: bool = True) -> float:
+    def _read_axis(
+        self, joy, axis_idx: int, is_left: bool, calibrate: bool = True
+    ) -> float:
         """Read a joystick axis with optional calibration offset."""
         if axis_idx >= joy.get_numaxes():
             return 0.0
@@ -234,8 +236,7 @@ class JoystickAgent(Agent):
 
                     # --- Read buttons ---
                     left_buttons = [
-                        joy_left.get_button(i)
-                        for i in range(joy_left.get_numbuttons())
+                        joy_left.get_button(i) for i in range(joy_left.get_numbuttons())
                     ]
                     right_buttons = [
                         joy_right.get_button(i)
@@ -252,20 +253,30 @@ class JoystickAgent(Agent):
 
                     # --- Edge-detect button presses ---
                     signal = None
-                    if self._rising_edge(left_buttons, self._prev_left_btns, L_BTN_REC_START):
+                    if self._rising_edge(
+                        left_buttons, self._prev_left_btns, L_BTN_REC_START
+                    ):
                         signal = "start_recording"
-                    elif self._rising_edge(left_buttons, self._prev_left_btns, L_BTN_HOME):
+                    elif self._rising_edge(
+                        left_buttons, self._prev_left_btns, L_BTN_HOME
+                    ):
                         signal = "home"
-                    elif self._rising_edge(left_buttons, self._prev_left_btns, L_BTN_VERT):
+                    elif self._rising_edge(
+                        left_buttons, self._prev_left_btns, L_BTN_VERT
+                    ):
                         signal = "reorient"
 
                     # --- Interrupt button (left btn 16) ---
-                    if self._rising_edge(left_buttons, self._prev_left_btns, L_BTN_INTERRUPT):
+                    if self._rising_edge(
+                        left_buttons, self._prev_left_btns, L_BTN_INTERRUPT
+                    ):
                         self.interrupt_event.set()
 
                     if signal is None:
                         for btn_idx, skill_name in R_BTN_SKILL_MAP.items():
-                            if self._rising_edge(right_buttons, self._prev_right_btns, btn_idx):
+                            if self._rising_edge(
+                                right_buttons, self._prev_right_btns, btn_idx
+                            ):
                                 signal = skill_name
                                 break
                         # Still update edge state for other skill buttons

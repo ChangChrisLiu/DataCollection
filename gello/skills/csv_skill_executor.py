@@ -35,19 +35,19 @@ from gello.utils.transform_utils import (
 )
 
 # Thresholds for detecting that async moveL has reached its target
-_POS_ARRIVED_M = 0.002     # 2mm position tolerance
-_ROT_ARRIVED_RAD = 0.02    # ~1.1 deg rotation tolerance
-_POLL_HZ = 50              # polling rate during async moveL
-_MOVE_TIMEOUT_S = 30.0     # max time to wait for a single waypoint
+_POS_ARRIVED_M = 0.002  # 2mm position tolerance
+_ROT_ARRIVED_RAD = 0.02  # ~1.1 deg rotation tolerance
+_POLL_HZ = 50  # polling rate during async moveL
+_MOVE_TIMEOUT_S = 30.0  # max time to wait for a single waypoint
 
 
 @dataclass
 class SkillWaypoint:
     """A single waypoint from the skill CSV."""
 
-    joints: np.ndarray       # (6,) joint angles
-    tcp_pose: np.ndarray     # (6,) [x,y,z,rx,ry,rz]
-    gripper_pos: int         # 0-255
+    joints: np.ndarray  # (6,) joint angles
+    tcp_pose: np.ndarray  # (6,) [x,y,z,rx,ry,rz]
+    gripper_pos: int  # 0-255
 
 
 def load_skill_csv(csv_path: str) -> List[SkillWaypoint]:
@@ -65,7 +65,9 @@ def load_skill_csv(csv_path: str) -> List[SkillWaypoint]:
             joints = np.array([float(row[i]) for i in range(1, 7)])
             tcp = np.array([float(row[i]) for i in range(7, 13)])
             gripper = int(float(row[13]))
-            waypoints.append(SkillWaypoint(joints=joints, tcp_pose=tcp, gripper_pos=gripper))
+            waypoints.append(
+                SkillWaypoint(joints=joints, tcp_pose=tcp, gripper_pos=gripper)
+            )
     return waypoints
 
 
@@ -160,9 +162,7 @@ class CSVSkillExecutor:
                 return False
 
             # Check if robot has reached target
-            actual = np.asarray(
-                self._robot_client.get_tcp_pose_raw(), dtype=np.float64
-            )
+            actual = np.asarray(self._robot_client.get_tcp_pose_raw(), dtype=np.float64)
             pos_err = np.linalg.norm(actual[:3] - target[:3])
             rot_err = np.linalg.norm(actual[3:] - target[3:])
             if pos_err < _POS_ARRIVED_M and rot_err < _ROT_ARRIVED_RAD:
@@ -261,8 +261,11 @@ class CSVSkillExecutor:
 
             # Set gripper position (robot is stopped, safe to use servoJ)
             try:
-                joints = self._obs_client.get_joint_state() if self._obs_client else \
-                    self._robot_client.get_joint_state()
+                joints = (
+                    self._obs_client.get_joint_state()
+                    if self._obs_client
+                    else self._robot_client.get_joint_state()
+                )
                 joints_cmd = joints.copy()
                 joints_cmd[-1] = wp.gripper_pos / 255.0  # normalize to 0-1
                 self._robot_client.command_joint_state(joints_cmd)

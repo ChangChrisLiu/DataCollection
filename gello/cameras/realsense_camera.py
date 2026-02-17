@@ -81,7 +81,10 @@ class RealSenseCamera(CameraDriver):
     def _get_sensor(self, sensor_name: str):
         """Get a sensor from the pipeline profile by name ('Color' or 'Stereo Module')."""
         for sensor in self._pipeline_profile.get_device().query_sensors():
-            if sensor.get_info(__import__("pyrealsense2").camera_info.name) == sensor_name:
+            if (
+                sensor.get_info(__import__("pyrealsense2").camera_info.name)
+                == sensor_name
+            ):
                 return sensor
         return None
 
