@@ -147,7 +147,11 @@ class DatasetWriter:
             Path to the episode directory.
         """
         dt_str = datetime.datetime.now().strftime("%m%d_%H%M%S")
-        episode_dir = self.data_dir / f"episode_{dt_str}"
+        skill_name = (metadata or {}).get("skill_name", "")
+        if skill_name:
+            episode_dir = self.data_dir / f"episode_{skill_name}_{dt_str}"
+        else:
+            episode_dir = self.data_dir / f"episode_{dt_str}"
         episode_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"\n[DatasetWriter] Saving unified episode to {episode_dir}")

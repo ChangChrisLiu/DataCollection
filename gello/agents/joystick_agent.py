@@ -19,8 +19,8 @@ Hardware Mapping (Thrustmaster SOL-R2 HOSAS):
     Axis 3 (mini-X)     -> TCP rotation Ry
     Axis 4 (mini-Y)     -> TCP rotation Rx
     Axis 5 (twist)      -> TCP rotation Rz
-    Button 15            -> skill: CPU extraction
-    Button 16            -> skill: RAM (reserved)
+    Button 34            -> skill: CPU extraction
+    Button 38            -> skill: RAM
     Button 17            -> skill: Connector (reserved)
     Button 18            -> skill: (reserved)
 """
@@ -50,8 +50,8 @@ L_BTN_INTERRUPT = 16  # Interrupt skill execution mid-waypoint
 
 # Right stick skill buttons -> skill name
 R_BTN_SKILL_MAP = {
-    15: "cpu",
-    16: "ram",
+    34: "cpu",
+    38: "ram",
     17: "connector",
     18: "skill_4",
 }
@@ -88,9 +88,8 @@ class HOSASConfig:
     min_gain: float = 0.1
 
     # Gripper step per cycle (normalized 0-1)
-    # joysticktst.py uses GRIPPER_STEP=10 at ~200Hz; ZMQ pipeline runs at 30Hz
-    # so scale up: 10/255 * (200/30) ≈ 0.26
-    gripper_step: float = 0.26
+    # Match joysticktst.py: GRIPPER_STEP=10 at 200Hz → 10/255 ≈ 0.04
+    gripper_step: float = 0.04
 
 
 class JoystickAgent(Agent):

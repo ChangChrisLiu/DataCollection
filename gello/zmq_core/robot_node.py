@@ -49,6 +49,8 @@ class ZMQServerRobot:
                     result = self._robot.command_cartesian_velocity(**args)
                 elif method == "speed_stop":
                     result = self._robot.speed_stop()
+                elif method == "stop_linear":
+                    result = self._robot.stop_linear()
                 elif method == "get_observations":
                     result = self._robot.get_observations()
                 elif method == "get_tcp_pose_raw":
@@ -61,6 +63,8 @@ class ZMQServerRobot:
                     result = self._robot.move_linear_path(**args)
                 elif method == "set_gripper":
                     result = self._robot.set_gripper(**args)
+                elif method == "set_gripper_speed":
+                    result = self._robot.set_gripper_speed(**args)
                 elif method == "get_actual_gripper_pos":
                     result = self._robot.get_actual_gripper_pos()
                 elif method == "set_freedrive_mode":
@@ -226,6 +230,12 @@ class ZMQClientRobot(Robot):
         self._socket.send(pickle.dumps(request))
         pickle.loads(self._socket.recv())
 
+    def stop_linear(self) -> None:
+        """Stop moveL motion (clears async moveL state) through ZMQ."""
+        request = {"method": "stop_linear"}
+        self._socket.send(pickle.dumps(request))
+        pickle.loads(self._socket.recv())
+
     def get_tcp_pose_raw(self) -> np.ndarray:
         """Get current TCP pose [x,y,z,rx,ry,rz] through ZMQ.
 
@@ -312,6 +322,15 @@ class ZMQClientRobot(Robot):
         request = {
             "method": "set_gripper",
             "args": {"pos": pos},
+        }
+        self._socket.send(pickle.dumps(request))
+        pickle.loads(self._socket.recv())
+
+    def set_gripper_speed(self, speed: int) -> None:
+        """Set gripper finger speed (0-255) via ZMQ."""
+        request = {
+            "method": "set_gripper_speed",
+            "args": {"speed": speed},
         }
         self._socket.send(pickle.dumps(request))
         pickle.loads(self._socket.recv())

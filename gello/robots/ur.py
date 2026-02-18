@@ -264,6 +264,11 @@ class URRobot(Robot):
             self._gripper_pos = max(0, min(255, int(pos)))
             self.gripper.move(self._gripper_pos)
 
+    def set_gripper_speed(self, speed: int) -> None:
+        """Set gripper finger speed (0-255). Lower = slower."""
+        if self._use_gripper:
+            self.gripper.set_speed(max(0, min(255, int(speed))))
+
     def get_actual_gripper_pos(self) -> int:
         """Read actual gripper position (0-255) from hardware via GET POS.
 
@@ -278,6 +283,10 @@ class URRobot(Robot):
     def speed_stop(self) -> None:
         """Stop speedL motion immediately."""
         self.robot.speedStop()
+
+    def stop_linear(self) -> None:
+        """Stop moveL motion (clears async moveL state)."""
+        self.robot.stopL()
 
     def freedrive_enabled(self) -> bool:
         return self._free_drive

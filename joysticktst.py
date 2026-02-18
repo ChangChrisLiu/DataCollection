@@ -65,8 +65,7 @@ L_BTN_INTERRUPT = 16
 # Discrete Buttons (Right)
 R_BTN_REC_STOP = 25
 R_BTN_UNDO = 4
-R_BTN_PAUSE = 38
-R_BTN_SKILLS = [15, 16, 17, 18]
+R_BTN_SKILLS = [34, 38]
 
 
 # ============================================================================
@@ -613,9 +612,9 @@ class DualTeleopController:
             self._skill_interrupted = False
             self._interrupted_skill = None
             self._execute_skill_csv(name, csv_path, rel_count, resume_absolute_only=True)
-        elif skill_id == 15:
+        elif skill_id == 34:
             self._execute_skill_csv("CPU", CPU_SKILL_CSV, CPU_RELATIVE_COUNT)
-        elif skill_id == 16:
+        elif skill_id == 38:
             self._execute_skill_csv("RAM", RAM_SKILL_CSV, RAM_RELATIVE_COUNT)
         else:
             print(f"[SKILL] Skill {skill_id} not implemented yet. Staying at current position.")
@@ -629,9 +628,9 @@ class DualTeleopController:
         print("  Mini Y(ax4)-> Gripper           Mini X(ax3)-> TCP Rx")
         print("                                  Mini Y(ax4)-> TCP Ry")
         print("  Btn 26/27  -> Start record      Btn 26/27  -> Stop record")
-        print("  Btn 24/25  -> Save waypoint     Btn 16     -> Undo waypoint")
-        print("  Btn 35     -> Home              Btn 35     -> Pause")
-        print("  Btn 17     -> Interrupt skill    Btn 5-8    -> Skills")
+        print("  Btn 24/25  -> Save waypoint     Btn 4      -> Undo waypoint")
+        print("  Btn 35     -> Home              Btn 34     -> CPU skill")
+        print("  Btn 17     -> Interrupt skill    Btn 38     -> RAM skill")
         print("  Btn 39     -> Vertical orient")
         print("--------------------\n")
         try:
@@ -678,8 +677,6 @@ class DualTeleopController:
                                 self.logger.stop_recording()
                             elif btn == R_BTN_UNDO:
                                 self.logger.undo_last_waypoint()
-                            elif btn == R_BTN_PAUSE:
-                                self.logger.toggle_pause()
                             elif btn in R_BTN_SKILLS:
                                 self.trigger_blank_skill(btn)
 

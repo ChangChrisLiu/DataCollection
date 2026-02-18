@@ -13,7 +13,7 @@ Workflow per round:
      a. If grasp verification fails -> recording paused, phase: correction
         Provide manual correction with joystick, recording resumes on input.
      b. Press skill button again -> phase: skill_resume (absolute WPs only)
-  4. After skill completes, press Home (left btn 34) -> save episode + go home
+  4. After skill completes -> auto-save episode + go home (Home btn as fallback)
 
 Output per round:
   episode_MMDD_HHMMSS/
@@ -37,6 +37,7 @@ import numpy as np
 import tyro
 from PIL import Image
 
+from gello.agents.joystick_agent import HOME_JOINTS_RAD
 from gello.data_utils.episode_buffer import EpisodeBuffer
 from gello.data_utils.dataset_writer import DatasetWriter
 from gello.env import RobotEnv
@@ -53,7 +54,8 @@ class Args:
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     hostname: str = "127.0.0.1"
-    hz: int = 30
+    control_hz: int = 200
+    record_hz: int = 30
     data_dir: str = "data/vla_dataset"
     image_size: int = 256
     verbose: bool = False
@@ -157,7 +159,8 @@ def main(args: Args):
     print("=" * 60)
     print(f"  Robot:    {args.hostname}:{args.robot_port}")
     print(f"  Obs:      {args.hostname}:{args.obs_port}")
-    print(f"  Rate:     {args.hz} Hz")
+    print(f"  Control:  {args.control_hz} Hz")
+    print(f"  Record:   {args.record_hz} Hz")
     print(f"  Data dir: {args.data_dir}")
     print(f"  CPU skill: {args.cpu_skill_csv} ({args.cpu_relative_count} rel)")
     print(f"  RAM skill: {args.ram_skill_csv} ({args.ram_relative_count} rel)")
@@ -196,7 +199,7 @@ def main(args: Args):
 
     env = RobotEnv(
         robot_client,
-        control_rate_hz=args.hz,
+        control_rate_hz=args.control_hz,
         camera_dict=camera_clients,
     )
 
@@ -227,6 +230,7 @@ def main(args: Args):
         robot_client=robot_client,
         obs_client=obs_client,
         relative_counts=skill_rel_counts,
+        grasp_thresholds={"cpu": 150, "ram": 225},
         move_speed=args.skill_move_speed,
         move_accel=args.skill_move_accel,
     )
@@ -264,7 +268,14 @@ def main(args: Args):
         skill_stop_event = threading.Event()
         skill_rec_thread = threading.Thread(
             target=record_skill_thread,
-            args=(obs_client, camera_clients, buffer, skill_stop_event, args.hz, args.image_size),
+            args=(
+                obs_client,
+                camera_clients,
+                buffer,
+                skill_stop_event,
+                args.record_hz,
+                args.image_size,
+            ),
             daemon=True,
         )
         skill_rec_thread.start()
@@ -275,9 +286,52 @@ def main(args: Args):
         grasp_failed = True
         # Stop recording thread — recording paused until joystick input
         _stop_recording_thread()
-        print(
-            "\n[PIPELINE] *** GRASP FAILED — provide correction with joystick ***"
-        )
+        print("\n[PIPELINE] *** GRASP FAILED — provide correction with joystick ***")
+
+    def _save_and_go_home(skill_name_override: Optional[str] = None):
+        """Stop recording, save episode, reset state, and move home."""
+        nonlocal skill_interrupted, interrupted_skill_name
+        nonlocal grasp_failed, episode_grasp_info, active_skill_name
+
+        robot_client.speed_stop()
+        _stop_recording_thread()
+
+        if buffer.phase != "idle":
+            sname = skill_name_override or active_skill_name
+            if sname:
+                has_correction = any(
+                    f.get("phase") == "correction" for f in buffer._frames
+                )
+                outcome = (
+                    "completed_after_correction" if has_correction else "completed"
+                )
+            else:
+                outcome = "no_skill"
+
+            metadata = buffer.get_metadata()
+            frames, segments = buffer.export()
+            episode_meta = {
+                **metadata,
+                "skill_name": sname or "",
+                "skill_outcome": outcome,
+                **episode_grasp_info,
+            }
+            writer.save_unified_episode(frames, segments, metadata=episode_meta)
+            print("[PIPELINE] Recording saved.")
+
+        # Reset state
+        skill_interrupted = False
+        interrupted_skill_name = None
+        grasp_failed = False
+        episode_grasp_info = {}
+        active_skill_name = None
+
+        # Restore full gripper speed for next episode
+        robot_client.set_gripper_speed(255)
+
+        # Move home
+        print("[PIPELINE] Moving to home position...")
+        robot_client.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
 
     # ------------------------------------------------------------------
     # 6. Main loop
@@ -287,8 +341,8 @@ def main(args: Args):
     print("  Left Btn 16:  Interrupt skill (manual correction)")
     print("  Left Btn 34:  Home + stop recording + save")
     print("  Left Btn 38:  Vertical reorient")
-    print("  Right Btn 15: Trigger CPU skill (or resume after interrupt)")
-    print("  Right Btn 16: Trigger RAM skill (or resume after interrupt)")
+    print("  Right Btn 34: Trigger CPU skill (or resume after interrupt)")
+    print("  Right Btn 38: Trigger RAM skill (or resume after interrupt)")
     print("  Ctrl+C:       Exit")
     print("----------------\n")
 
@@ -326,50 +380,7 @@ def main(args: Args):
 
                 # --- HOME (stop recording + move home) ---
                 elif signal == "home":
-                    # Clean up any in-progress state
-                    _stop_recording_thread()
-
-                    if buffer.phase != "idle":
-                        # Determine skill outcome
-                        if active_skill_name:
-                            has_correction = any(
-                                f.get("phase") == "correction"
-                                for f in buffer._frames
-                            )
-                            outcome = (
-                                "completed_after_correction"
-                                if has_correction
-                                else "completed"
-                            )
-                        else:
-                            outcome = "no_skill"
-
-                        metadata = buffer.get_metadata()
-                        frames, segments = buffer.export()
-
-                        # Build episode metadata
-                        episode_meta = {
-                            **metadata,
-                            "skill_name": active_skill_name or "",
-                            "skill_outcome": outcome,
-                            **episode_grasp_info,
-                        }
-                        writer.save_unified_episode(
-                            frames, segments, metadata=episode_meta
-                        )
-                        print("[PIPELINE] Recording saved.")
-
-                    # Reset state
-                    skill_interrupted = False
-                    interrupted_skill_name = None
-                    grasp_failed = False
-                    episode_grasp_info = {}
-                    active_skill_name = None
-
-                    # Move home
-                    print("[PIPELINE] Moving to home position...")
-                    robot_client.speed_stop()
-                    env._handle_skill("home")
+                    _save_and_go_home()
                     obs = env.get_obs()
                     continue
 
@@ -407,12 +418,11 @@ def main(args: Args):
 
                         if completed:
                             _stop_recording_thread()
-                            skill_interrupted = False
-                            interrupted_skill_name = None
-                            grasp_failed = False
                             print(
-                                "[PIPELINE] Skill resumed and completed. "
-                                "Press Home (btn 34) to save."
+                                "[PIPELINE] Skill resumed and completed. Auto-saving and going home..."
+                            )
+                            _save_and_go_home(
+                                skill_name_override=interrupted_skill_name
                             )
                         else:
                             _stop_recording_thread()
@@ -465,9 +475,9 @@ def main(args: Args):
                     if completed:
                         _stop_recording_thread()
                         print(
-                            f"[PIPELINE] Skill '{signal}' complete. "
-                            f"Press Home (btn 34) to save and go home."
+                            f"[PIPELINE] Skill '{signal}' complete. Auto-saving and going home..."
                         )
+                        _save_and_go_home()
                     elif grasp_failed:
                         # Grasp verification failed -> wait for correction
                         # Recording thread already stopped by _on_grasp_failed
@@ -529,9 +539,8 @@ def main(args: Args):
                 current_wrist_ts = obs.get("wrist_timestamp", 0.0)
                 current_base_ts = obs.get("base_timestamp", 0.0)
                 has_new = (
-                    (current_wrist_ts > 0 and current_wrist_ts > last_wrist_ts)
-                    or (current_base_ts > 0 and current_base_ts > last_base_ts)
-                )
+                    current_wrist_ts > 0 and current_wrist_ts > last_wrist_ts
+                ) or (current_base_ts > 0 and current_base_ts > last_base_ts)
 
                 if has_new:
                     frame = build_frame(obs, camera_clients, args.image_size)

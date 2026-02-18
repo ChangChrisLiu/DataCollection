@@ -45,9 +45,6 @@ _MOVE_TIMEOUT_S = 30.0  # max time to wait for a single waypoint
 _DEFAULT_BLEND_M = 0.002  # 2mm
 _SENSITIVE_BLEND_M = 0.0001  # 0.1mm for contact approach
 
-# Grasp verification
-_GRASP_FAIL_THRESHOLD = 200  # if actual_255 > this, grasp failed
-
 
 @dataclass
 class SkillWaypoint:
@@ -108,7 +105,7 @@ def _segment_by_gripper(waypoints: List[SkillWaypoint]) -> List[GripperSegment]:
     seg_gripper = waypoints[0].gripper_pos
 
     for i in range(1, len(waypoints)):
-        if waypoints[i].gripper_pos != seg_gripper:
+        if waypoints[i].gripper_pos != seg_gripper or waypoints[i - 1].is_verification:
             seg = GripperSegment(
                 start_idx=seg_start,
                 end_idx=i - 1,
@@ -182,6 +179,7 @@ class CSVSkillExecutor:
         robot_client: Any,
         obs_client: Optional[Any] = None,
         relative_counts: Optional[Dict[str, int]] = None,
+        grasp_thresholds: Optional[Dict[str, int]] = None,
         move_speed: float = 0.1,
         move_accel: float = 0.5,
     ):
@@ -189,6 +187,7 @@ class CSVSkillExecutor:
         self._obs_client = obs_client
         self._move_speed = move_speed
         self._move_accel = move_accel
+        self._grasp_thresholds = grasp_thresholds or {}
 
         # Load all skill CSVs
         self._skills: Dict[str, List[SkillWaypoint]] = {}
@@ -237,7 +236,7 @@ class CSVSkillExecutor:
         t0 = time.time()
         while time.time() - t0 < _MOVE_TIMEOUT_S:
             if interrupt_event is not None and interrupt_event.is_set():
-                self._robot_client.speed_stop()
+                self._robot_client.stop_linear()
                 time.sleep(0.05)
                 return False
 
@@ -245,6 +244,7 @@ class CSVSkillExecutor:
             pos_err = np.linalg.norm(actual[:3] - target[:3])
             rot_err = np.linalg.norm(actual[3:] - target[3:])
             if pos_err < _POS_ARRIVED_M and rot_err < _ROT_ARRIVED_RAD:
+                self._robot_client.stop_linear()
                 return True
 
             time.sleep(dt)
@@ -253,6 +253,7 @@ class CSVSkillExecutor:
             f"[SkillExecutor] WARNING: moveL timeout ({_MOVE_TIMEOUT_S}s). "
             f"Robot may not have reached target."
         )
+        self._robot_client.stop_linear()
         return True
 
     def _move_path_and_wait(
@@ -289,7 +290,7 @@ class CSVSkillExecutor:
 
         while time.time() - t0 < timeout:
             if interrupt_event is not None and interrupt_event.is_set():
-                self._robot_client.speed_stop()
+                self._robot_client.stop_linear()
                 time.sleep(0.05)
                 return False
 
@@ -297,10 +298,12 @@ class CSVSkillExecutor:
             pos_err = np.linalg.norm(actual[:3] - target[:3])
             rot_err = np.linalg.norm(actual[3:] - target[3:])
             if pos_err < _POS_ARRIVED_M and rot_err < _ROT_ARRIVED_RAD:
+                self._robot_client.stop_linear()
                 return True
 
             time.sleep(dt)
 
+        self._robot_client.stop_linear()
         print(
             f"[SkillExecutor] WARNING: path timeout ({timeout:.0f}s). "
             f"Robot may not have reached target."
@@ -320,21 +323,26 @@ class CSVSkillExecutor:
         except Exception as e:
             print(f"[SkillExecutor] Gripper command failed: {e}")
 
-    def _check_grasp(self) -> Tuple[bool, int, int]:
+    def _set_gripper_speed(self, speed: int) -> None:
+        """Set gripper finger speed (0-255) via ZMQ."""
+        try:
+            self._robot_client.set_gripper_speed(speed)
+        except Exception as e:
+            print(f"[SkillExecutor] Gripper speed command failed: {e}")
+
+    def _check_grasp(self, threshold: int) -> Tuple[bool, int, int]:
         """Check if the grasp succeeded after verification waypoint.
 
-        Reads the ACTUAL gripper position from hardware (GET POS), not the
-        locally tracked value. If the gripper was commanded to open (230)
-        but an object blocks it, the actual position will be much lower.
+        Reads the ACTUAL gripper position from hardware (GET POS). If an
+        object blocks the gripper, the actual position will be below the
+        threshold (object prevented full closure).
 
         Returns:
-            (success, commanded_pos, actual_pos_255)
+            (success, threshold, actual_pos_255)
         """
-        client = self._obs_client if self._obs_client else self._robot_client
-        actual_255 = client.get_actual_gripper_pos()
-        # If gripper reached near-open (> 200), nothing was grasped
-        grasp_ok = actual_255 <= _GRASP_FAIL_THRESHOLD
-        return grasp_ok, 230, actual_255  # 230 is the commanded open value
+        actual_255 = self._robot_client.get_actual_gripper_pos()
+        grasp_ok = actual_255 < threshold
+        return grasp_ok, threshold, actual_255
 
     def execute(
         self,
@@ -366,12 +374,16 @@ class CSVSkillExecutor:
 
         waypoints = self._skills[skill_name]
         rel_count = self._relative_counts[skill_name]
+        grasp_threshold = self._grasp_thresholds.get(skill_name, 200)
         total = len(waypoints)
         grasp_info: Dict[str, Any] = {}
 
         if total == 0:
             print("[SkillExecutor] No waypoints to execute.")
             return True, grasp_info
+
+        # Slow gripper for controlled grasp
+        self._set_gripper_speed(128)
 
         # Clear any stale interrupt
         if interrupt_event is not None:
@@ -422,27 +434,38 @@ class CSVSkillExecutor:
                 return False, grasp_info
 
             # Set gripper for this segment (before moving)
+            gripper_changed = False
             if not is_first:
                 self._set_gripper(seg.gripper_pos)
+                gripper_changed = True
                 print(f"[SkillExecutor] Gripper -> {seg.gripper_pos}")
 
-            # Build blended path for this segment
-            blend_radii = _compute_blend_radii(seg, is_first, is_last)
             seg_poses = target_poses[wp_counter : wp_counter + len(seg.waypoints)]
 
-            # Build 9-element path entries
-            path = []
-            for j, pose in enumerate(seg_poses):
-                entry = list(pose) + [
-                    self._move_speed,
-                    self._move_accel,
-                    blend_radii[j],
-                ]
-                path.append(entry)
-
-            # Execute path
-            last_target = seg_poses[-1]
-            arrived = self._move_path_and_wait(path, last_target, interrupt_event)
+            if gripper_changed:
+                # After gripper change (grasp/release): use individual moveL
+                # per waypoint, matching joysticktst.py. Path blending can
+                # fail on short post-grasp segments (e.g. 5cm lift) because
+                # the controller pre-plans the entire trajectory and the
+                # actual load/position may differ from planned.
+                arrived = True
+                for j, pose in enumerate(seg_poses):
+                    if not self._move_and_wait(pose, interrupt_event):
+                        arrived = False
+                        break
+            else:
+                # First segment: use path blending for smooth approach
+                blend_radii = _compute_blend_radii(seg, is_first, is_last)
+                path = []
+                for j, pose in enumerate(seg_poses):
+                    entry = list(pose) + [
+                        self._move_speed,
+                        self._move_accel,
+                        blend_radii[j],
+                    ]
+                    path.append(entry)
+                last_target = seg_poses[-1]
+                arrived = self._move_path_and_wait(path, last_target, interrupt_event)
 
             if not arrived:
                 global_idx = start_idx + wp_counter + len(seg.waypoints) - 1
@@ -460,22 +483,23 @@ class CSVSkillExecutor:
 
             # Grasp verification after verification segment
             if seg.has_verification:
-                grasp_ok, commanded, actual = self._check_grasp()
+                grasp_ok, threshold, actual = self._check_grasp(grasp_threshold)
                 grasp_info = {
                     "grasp_verified": grasp_ok,
-                    "grasp_commanded": commanded,
+                    "grasp_threshold": threshold,
                     "grasp_actual": actual,
                 }
                 if grasp_ok:
                     print(
                         f"[SkillExecutor] Grasp VERIFIED "
-                        f"(actual={actual}, threshold={_GRASP_FAIL_THRESHOLD})"
+                        f"(actual={actual}, threshold={threshold})"
                     )
                 else:
                     print(
                         f"\n[SkillExecutor] *** GRASP FAILED *** "
-                        f"(actual={actual} > {_GRASP_FAIL_THRESHOLD})"
+                        f"(actual={actual} >= {threshold})"
                     )
+                    # Keep slow gripper speed for precise correction control
                     if on_grasp_failed is not None:
                         on_grasp_failed()
                     if interrupt_event is not None:
@@ -486,5 +510,6 @@ class CSVSkillExecutor:
         if segments:
             self._set_gripper(segments[-1].gripper_pos)
 
+        self._set_gripper_speed(255)
         print(f"[SkillExecutor] Skill '{skill_name}' execution complete.")
         return True, grasp_info
