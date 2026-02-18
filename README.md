@@ -59,17 +59,16 @@ git clone https://github.com/ChangChrisLiu/DataCollection.git
 cd DataCollection
 ```
 
-### Virtual Environment
+### Conda Environment
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+conda create -n datacollection python=3.11 -y
+conda activate datacollection
 
-uv venv --python 3.11
-source .venv/bin/activate
 git submodule init && git submodule update
-uv pip install -r requirements.txt
-uv pip install -e .
-uv pip install -e third_party/DynamixelSDK/python
+pip install -r requirements.txt
+pip install -e .
+pip install -e third_party/DynamixelSDK/python
 ```
 
 ### Additional Dependencies
@@ -85,7 +84,7 @@ pip install scipy         # Rotation transforms
 
 For data conversion (see [Data Conversion](#data-conversion)):
 ```bash
-# RLDS / OpenVLA (conda env recommended)
+# RLDS / OpenVLA
 pip install tensorflow tensorflow-datasets tensorflow-hub
 
 # LeRobot / OpenPI
