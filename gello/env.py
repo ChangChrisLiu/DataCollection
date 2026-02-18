@@ -73,29 +73,23 @@ class RobotEnv:
 
     def _handle_skill(self, skill: str) -> None:
         """Execute a robot skill (blocking motion)."""
-        from gello.agents.joystick_agent import HOME_GRIPPER_POS, HOME_JOINTS_RAD
+        from gello.agents.joystick_agent import HOME_JOINTS_RAD
 
         if skill == "home":
             print("[SKILL] Moving to home position...")
             self._robot.speed_stop()
-            # Move to home via servoJ in small steps
-            current = self._robot.get_joint_state()[:6]
-            home = np.array(HOME_JOINTS_RAD)
-            steps = max(int(np.abs(current - home).max() / 0.01), 50)
-            gripper_norm = HOME_GRIPPER_POS / 255.0
-            for jnt in np.linspace(current, home, steps):
-                full_cmd = np.append(jnt, gripper_norm)
-                self._robot.command_joint_state(full_cmd)
-                import time as _time
-
-                _time.sleep(0.002)
+            # Use moveJ (blocking) — same as joysticktst.py
+            self._robot.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
             print("[SKILL] Home reached.")
 
         elif skill == "reorient":
-            print("[SKILL] Vertical reorient requested.")
-            # Reorient is robot-specific; for now just stop motion
+            print("[SKILL] Vertical reorient (straight down)...")
             self._robot.speed_stop()
-            print("[SKILL] Reorient: use moveL externally or extend this method.")
+            # Same position, force rotation to point straight down
+            tcp = self._robot.get_tcp_pose_raw()
+            tcp[3:] = [3.14159, 0.0, 0.0]
+            self._robot.move_linear(tcp, speed=0.1, accel=0.2)
+            print("[SKILL] Reorient complete.")
 
         else:
             print(f"[SKILL] Unknown skill: {skill}")

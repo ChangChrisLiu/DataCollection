@@ -53,6 +53,8 @@ class ZMQServerRobot:
                     result = self._robot.get_observations()
                 elif method == "get_tcp_pose_raw":
                     result = self._robot.get_tcp_pose_raw()
+                elif method == "move_joints":
+                    result = self._robot.move_joints(**args)
                 elif method == "move_linear":
                     result = self._robot.move_linear(**args)
                 elif method == "move_linear_path":
@@ -230,6 +232,20 @@ class ZMQClientRobot(Robot):
         if isinstance(result, dict) and "error" in result:
             raise RuntimeError(result["error"])
         return result
+
+    def move_joints(
+        self,
+        joints: list,
+        speed: float = 0.5,
+        accel: float = 0.3,
+    ) -> None:
+        """Move to joint positions via moveJ (blocking) through ZMQ."""
+        request = {
+            "method": "move_joints",
+            "args": {"joints": joints, "speed": speed, "accel": accel},
+        }
+        self._socket.send(pickle.dumps(request))
+        pickle.loads(self._socket.recv())
 
     def move_linear(
         self,

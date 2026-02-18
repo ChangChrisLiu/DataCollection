@@ -34,6 +34,7 @@ class URRobot(Robot):
         self._free_drive = False
         self.robot.endFreedriveMode()
         self._use_gripper = not no_gripper
+        self._gripper_pos = 0  # Tracked locally (0-255), like joysticktst.py
 
     def num_dofs(self) -> int:
         """Get the number of joints of the robot.
@@ -46,12 +47,8 @@ class URRobot(Robot):
         return 6
 
     def _get_gripper_pos(self) -> float:
-        import time
-
-        time.sleep(0.01)
-        gripper_pos = self.gripper.get_current_position()
-        assert 0 <= gripper_pos <= 255, "Gripper position must be between 0 and 255"
-        return gripper_pos / 255
+        """Get gripper position as normalized 0-1 from local tracking."""
+        return self._gripper_pos / 255.0
 
     def get_tcp_pose_raw(self) -> np.ndarray:
         """Get the current TCP pose as [x, y, z, rx, ry, rz] (UR rotation vector).
@@ -60,6 +57,21 @@ class URRobot(Robot):
             np.ndarray: (6,) TCP pose in base frame.
         """
         return np.array(self.r_inter.getActualTCPPose())
+
+    def move_joints(
+        self,
+        joints: list,
+        speed: float = 0.5,
+        accel: float = 0.3,
+    ) -> None:
+        """Move to joint positions via moveJ (blocking).
+
+        Args:
+            joints: 6 joint angles in radians.
+            speed: Joint speed in rad/s.
+            accel: Joint acceleration in rad/s^2.
+        """
+        self.robot.moveJ(list(joints[:6]), speed, accel)
 
     def move_linear(
         self,
@@ -152,7 +164,8 @@ class URRobot(Robot):
     ) -> None:
         """Command TCP velocity via speedL.
 
-        UR handles IK internally.
+        UR handles IK internally. Gripper position is tracked locally
+        (no round-trip read) matching joysticktst.py behavior.
 
         Args:
             velocity: 6D Cartesian velocity [vx, vy, vz, wx, wy, wz]
@@ -166,9 +179,8 @@ class URRobot(Robot):
         assert len(velocity) == 6, f"Expected 6D velocity, got {len(velocity)}"
         self.robot.speedL(list(velocity), acceleration, time=time_running)
         if self._use_gripper and abs(gripper_vel) > 0.001:
-            current_grip = self._get_gripper_pos()
-            new_grip = max(0.0, min(1.0, current_grip + gripper_vel))
-            self.gripper.move(int(new_grip * 255), 255, 10)
+            self._gripper_pos = max(0, min(255, self._gripper_pos + int(gripper_vel * 255)))
+            self.gripper.move(self._gripper_pos)
 
     def speed_stop(self) -> None:
         """Stop speedL motion immediately."""
