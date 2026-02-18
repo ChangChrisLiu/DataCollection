@@ -73,7 +73,7 @@ class RobotEnv:
 
     def _handle_skill(self, skill: str) -> None:
         """Execute a robot skill (blocking motion)."""
-        from gello.agents.joystick_agent import HOME_JOINTS_RAD
+        from gello.agents.joystick_agent import HOME_GRIPPER_POS, HOME_JOINTS_RAD
 
         if skill == "home":
             print("[SKILL] Moving to home position...")
@@ -82,9 +82,9 @@ class RobotEnv:
             current = self._robot.get_joint_state()[:6]
             home = np.array(HOME_JOINTS_RAD)
             steps = max(int(np.abs(current - home).max() / 0.01), 50)
-            gripper_pos = self._robot.get_joint_state()[-1]
+            gripper_norm = HOME_GRIPPER_POS / 255.0
             for jnt in np.linspace(current, home, steps):
-                full_cmd = np.append(jnt, gripper_pos)
+                full_cmd = np.append(jnt, gripper_norm)
                 self._robot.command_joint_state(full_cmd)
                 import time as _time
 
