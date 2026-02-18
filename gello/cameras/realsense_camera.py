@@ -102,13 +102,14 @@ class RealSenseCamera(CameraDriver):
                 ("exposure", opt.exposure),
                 ("gain", opt.gain),
                 ("white_balance", opt.white_balance),
-                ("enable_auto_exposure", opt.enable_auto_exposure),
-                ("enable_auto_white_balance", opt.enable_auto_white_balance),
             ]:
                 try:
                     settings[name] = color_sensor.get_option(option)
                 except RuntimeError:
                     pass
+            # Always save auto modes as disabled — apply_settings forces them off
+            settings["enable_auto_exposure"] = 0
+            settings["enable_auto_white_balance"] = 0
 
         depth_sensor = self._get_sensor("Stereo Module")
         if depth_sensor is not None:

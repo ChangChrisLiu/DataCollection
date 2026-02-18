@@ -156,10 +156,7 @@ class OAKDCamera(CameraDriver):
             settings["color_temp_k"] = rgb_packet.getColorTemperature()
         except Exception:
             pass
-        try:
-            settings["lens_position"] = rgb_packet.getLensPosition()
-        except Exception:
-            pass
+        # OAK-D Pro has fixed focus — no lens_position to save
         return settings
 
     def apply_settings(self, settings: Dict[str, object]) -> None:
@@ -178,11 +175,6 @@ class OAKDCamera(CameraDriver):
         color_temp_k = settings.get("color_temp_k")
         if color_temp_k is not None:
             ctrl.setManualWhiteBalance(int(color_temp_k))
-            applied = True
-
-        lens_position = settings.get("lens_position")
-        if lens_position is not None and int(lens_position) >= 0:
-            ctrl.setManualFocus(int(lens_position))
             applied = True
 
         if applied:
