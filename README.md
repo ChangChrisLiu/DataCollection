@@ -180,11 +180,13 @@ LEFT STICK                              RIGHT STICK
 LEFT BUTTONS                            RIGHT BUTTONS
   Btn 25: Start recording                 Btn 34: Trigger CPU skill
   Btn 34: Home + stop + save              Btn 38: Trigger RAM skill
-  Btn 38: Vertical reorient
-  Btn 16: Interrupt active skill
+  Btn 38: Vertical reorient               Btn 8:  90° CW rotation (fixed)
+  Btn 16: Interrupt active skill          Btn 9:  90° CCW rotation (fixed)
 ```
 
 The left slider controls a speed gain multiplier: fully up = 100% speed, fully down = 10% speed. All axes have a 0.05 deadzone and are calibrated at startup.
+
+**90° Auto-Rotation** (Btn 8/9): Triggers a fixed 90° TCP rotation around the Z axis at 0.393 rad/s (completes in ~4 seconds). The rotation speed is independent of the slider gain. Pressing the button again during an active rotation is ignored to prevent over-rotation. All other controls (translation, gripper, Rx/Ry, twist) remain active during the rotation.
 
 ---
 
@@ -210,7 +212,7 @@ Each skill CSV contains a verification waypoint that lifts the gripper 5cm after
 
 | Skill | Grasp Close | Threshold | Pass Condition |
 |-------|-------------|-----------|----------------|
-| CPU | 165 | 150 | actual < 150 (object blocking fingers) |
+| CPU | 165 | 155 | actual < 155 (object blocking fingers) |
 | RAM | 225 | 225 | actual < 225 (object blocking fingers) |
 
 - **Pass**: Object is held. Skill continues normally.
@@ -274,7 +276,7 @@ The **first segment** (approach, before any gripper change) uses `moveL(path)` w
 
 | Skill | Button | CSV File | Relative Count | Total Waypoints | Grasp Close | Grasp Threshold |
 |-------|--------|----------|----------------|-----------------|-------------|-----------------|
-| CPU Extraction | Right 34 | `CPU_Skills.csv` | 20 | 23 | 165 | 150 |
+| CPU Extraction | Right 34 | `CPU_Skills.csv` | 20 | 23 | 165 | 155 |
 | RAM Extraction | Right 38 | `RAM_Skills.csv` | 15 | 19 | 225 | 225 |
 
 ---

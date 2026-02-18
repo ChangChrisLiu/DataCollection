@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from gello.utils.transform_utils import (
+    align_pose6d_rotvecs,
     homogeneous_to_pose6d,
     pose6d_to_homogeneous,
 )
@@ -419,6 +420,12 @@ class CSVSkillExecutor:
                 target_poses.append(homogeneous_to_pose6d(T_target))
             else:
                 target_poses.append(wp.tcp_pose.copy())
+
+        # Align rotation vectors to prevent near-pi flips.
+        # The trigger TCP (or first waypoint) serves as the reference direction.
+        if target_poses:
+            ref_rv = np.asarray(target_poses[0][3:6], dtype=np.float64)
+            target_poses = align_pose6d_rotvecs(target_poses, ref_rv)
 
         # Segment active waypoints by gripper value
         segments = _segment_by_gripper(active_wps)

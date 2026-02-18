@@ -230,7 +230,7 @@ def main(args: Args):
         robot_client=robot_client,
         obs_client=obs_client,
         relative_counts=skill_rel_counts,
-        grasp_thresholds={"cpu": 150, "ram": 225},
+        grasp_thresholds={"cpu": 155, "ram": 225},
         move_speed=args.skill_move_speed,
         move_accel=args.skill_move_accel,
     )

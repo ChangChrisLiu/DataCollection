@@ -66,6 +66,9 @@ L_BTN_INTERRUPT = 16
 R_BTN_REC_STOP = 25
 R_BTN_UNDO = 4
 R_BTN_SKILLS = [34, 38]
+R_BTN_ROTATE_CW = 8  # 90° rotation, same dir as axis 5 at +1
+R_BTN_ROTATE_CCW = 9  # 90° rotation, opposite direction
+AUTO_ROTATE_SPEED = 0.393  # π/8: 90° in 4 seconds
 
 
 # ============================================================================
@@ -463,6 +466,11 @@ class DualTeleopController:
         self._skill_interrupted = False
         self._interrupted_skill = None  # (name, csv_path, rel_count)
 
+        # Auto-rotation state (90° fixed rotation via btn 8/9)
+        self._auto_rotate_remaining = 0.0
+        self._auto_rotate_dir = 0
+        self._last_loop_time = time.time()
+
     def _apply_deadzone(self, val):
         return 0.0 if abs(val) < DEADZONE_VAL else val
 
@@ -631,7 +639,8 @@ class DualTeleopController:
         print("  Btn 24/25  -> Save waypoint     Btn 4      -> Undo waypoint")
         print("  Btn 35     -> Home              Btn 34     -> CPU skill")
         print("  Btn 17     -> Interrupt skill    Btn 38     -> RAM skill")
-        print("  Btn 39     -> Vertical orient")
+        print("  Btn 39     -> Vertical orient    Btn 8      -> 90° CW rotate")
+        print("                                   Btn 9      -> 90° CCW rotate")
         print("--------------------\n")
         try:
             while self.keep_running:
@@ -679,6 +688,14 @@ class DualTeleopController:
                                 self.logger.undo_last_waypoint()
                             elif btn in R_BTN_SKILLS:
                                 self.trigger_blank_skill(btn)
+                            elif btn == R_BTN_ROTATE_CW and self._auto_rotate_remaining <= 0:
+                                self._auto_rotate_remaining = np.pi / 2
+                                self._auto_rotate_dir = -1
+                                print("[ROTATE] 90° CW rotation started")
+                            elif btn == R_BTN_ROTATE_CCW and self._auto_rotate_remaining <= 0:
+                                self._auto_rotate_remaining = np.pi / 2
+                                self._auto_rotate_dir = 1
+                                print("[ROTATE] 90° CCW rotation started")
 
                 # ==========================================================
                 # CONTINUOUS TELEOPERATION (SpeedL)
@@ -706,6 +723,17 @@ class DualTeleopController:
                     target_vel[3] = val_ry * MAX_SPEED_R * gain
                     target_vel[4] = -val_rx * MAX_SPEED_R * gain
                     target_vel[5] = -val_rz * MAX_SPEED_RZ * gain
+
+                # Auto-rotation (90° fixed rotation)
+                now = time.time()
+                dt = now - self._last_loop_time
+                self._last_loop_time = now
+
+                if self._auto_rotate_remaining > 0:
+                    self._auto_rotate_remaining -= AUTO_ROTATE_SPEED * dt
+                    if self._auto_rotate_remaining < 0:
+                        self._auto_rotate_remaining = 0.0
+                    target_vel[5] += self._auto_rotate_dir * AUTO_ROTATE_SPEED
 
                 self.rtde_c.speedL(target_vel, ACCELERATION, time=WATCHDOG_TIME)
 

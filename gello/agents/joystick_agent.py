@@ -56,6 +56,10 @@ R_BTN_SKILL_MAP = {
     18: "skill_4",
 }
 
+# Right stick 90° auto-rotation buttons
+R_BTN_ROTATE_CW = 8  # 90° rotation, same dir as axis 5 at +1
+R_BTN_ROTATE_CCW = 9  # 90° rotation, opposite direction
+
 # ---------------------------------------------------------------------------
 # Axis constants (matching joysticktst.py)
 # ---------------------------------------------------------------------------
@@ -90,6 +94,9 @@ class HOSASConfig:
     # Gripper step per cycle (normalized 0-1)
     # Match joysticktst.py: GRIPPER_STEP=10 at 200Hz → 10/255 ≈ 0.04
     gripper_step: float = 0.04
+
+    # Auto-rotation speed (rad/s): π/8 completes 90° in 4 seconds
+    auto_rotate_speed: float = 0.393
 
 
 class JoystickAgent(Agent):
@@ -134,6 +141,12 @@ class JoystickAgent(Agent):
 
         # Interrupt event — set by left btn 16, checked by skill executor
         self.interrupt_event = threading.Event()
+
+        # Auto-rotation state (90° fixed rotation via btn 8/9)
+        self._rotate_request = None  # set by _read_loop: -1 or +1
+        self._auto_rotate_remaining = 0.0
+        self._auto_rotate_dir = 0
+        self._last_act_time = time.time()
 
         # Start background thread
         self._running = True
@@ -291,6 +304,17 @@ class JoystickAgent(Agent):
                                     else False
                                 )
 
+                    # --- Auto-rotation buttons (right btn 8/9) ---
+                    rotate_req = None
+                    if self._rising_edge(
+                        right_buttons, self._prev_right_btns, R_BTN_ROTATE_CW
+                    ):
+                        rotate_req = -1  # same dir as -axis5 * speed
+                    elif self._rising_edge(
+                        right_buttons, self._prev_right_btns, R_BTN_ROTATE_CCW
+                    ):
+                        rotate_req = 1
+
                     # --- Gain from left slider ---
                     gain = self._get_gain(joy_left)
 
@@ -302,6 +326,8 @@ class JoystickAgent(Agent):
                         self._gain = gain
                         if signal is not None:
                             self._skill_request = signal
+                        if rotate_req is not None:
+                            self._rotate_request = rotate_req
 
                     time.sleep(0.005)  # ~200 Hz polling
 
@@ -320,7 +346,9 @@ class JoystickAgent(Agent):
             grip_d = self._gripper_delta
             skill = self._skill_request
             gain = self._gain
+            rotate_req = self._rotate_request
             self._skill_request = None  # consume
+            self._rotate_request = None  # consume
 
         # Handle skill/signal requests
         if skill is not None:
@@ -342,6 +370,21 @@ class JoystickAgent(Agent):
         vel[3] = right_axes[R_AXIS_MINI_Y] * cfg.max_speed_angular * gain
         vel[4] = -right_axes[R_AXIS_MINI_X] * cfg.max_speed_angular * gain
         vel[5] = -right_axes[R_AXIS_RZ] * cfg.max_speed_rz * gain
+
+        # Auto-rotation state machine (90° fixed rotation)
+        now = time.time()
+        dt = now - self._last_act_time
+        self._last_act_time = now
+
+        if rotate_req is not None and self._auto_rotate_remaining <= 0:
+            self._auto_rotate_remaining = np.pi / 2
+            self._auto_rotate_dir = rotate_req
+
+        if self._auto_rotate_remaining > 0:
+            self._auto_rotate_remaining -= cfg.auto_rotate_speed * dt
+            if self._auto_rotate_remaining < 0:
+                self._auto_rotate_remaining = 0.0
+            vel[5] += self._auto_rotate_dir * cfg.auto_rotate_speed
 
         if self._verbose and np.any(np.abs(vel) > 0.01):
             print(f"[HOSAS] vel={vel}, grip_d={grip_d:.3f}, gain={gain:.2f}")

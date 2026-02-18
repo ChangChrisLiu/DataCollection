@@ -95,6 +95,56 @@ def homogeneous_to_pose6d(T: np.ndarray) -> np.ndarray:
     return np.concatenate([pos, rotvec])
 
 
+def align_rotvec(target: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """Ensure a rotation vector is on the same side of the pi boundary as a reference.
+
+    Near rotation angle pi, scipy as_rotvec() can flip the axis direction,
+    producing a rotation vector that represents the same orientation but causes
+    UR moveL path blending to interpolate the long way around.
+
+    If the target and reference point in opposite directions (dot product < 0),
+    flip the target to the equivalent representation: angle' = 2*pi - angle,
+    axis' = -axis.
+
+    Args:
+        target: (3,) rotation vector to align.
+        reference: (3,) reference rotation vector.
+
+    Returns:
+        (3,) aligned rotation vector (same rotation, consistent direction).
+    """
+    if np.dot(target, reference) < 0:
+        angle = np.linalg.norm(target)
+        if angle < 1e-10:
+            return target
+        axis = target / angle
+        return -axis * (2 * np.pi - angle)
+    return target
+
+
+def align_pose6d_rotvecs(
+    poses: List[np.ndarray],
+    reference_rotvec: np.ndarray,
+) -> List[np.ndarray]:
+    """Align rotation vectors in a sequence of 6D poses to a reference direction.
+
+    Prevents UR moveL path blending issues caused by rotation vector flips
+    near the pi boundary.
+
+    Args:
+        poses: List of (6,) poses [x, y, z, rx, ry, rz].
+        reference_rotvec: (3,) reference rotation vector direction.
+
+    Returns:
+        List of (6,) poses with aligned rotation vectors.
+    """
+    aligned = []
+    for pose in poses:
+        rv = align_rotvec(pose[3:6], reference_rotvec)
+        aligned.append(np.concatenate([pose[:3], rv]))
+    return aligned
+
+
 def pose6d_to_pos_quat(pose: np.ndarray) -> np.ndarray:
     """Convert a UR 6D pose to [x, y, z, qx, qy, qz, qw].
 
