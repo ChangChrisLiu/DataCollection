@@ -91,6 +91,8 @@ pip install tensorflow tensorflow-datasets tensorflow-hub
 pip install lerobot
 ```
 
+> **Note (PyTorch version):** `pip install lerobot` pulls in torch < 2.8. If your GPU requires a newer PyTorch (e.g. RTX 5090 needs CUDA 13.0 / torch 2.10+), install lerobot first, then force-reinstall your required PyTorch version. The pip resolver will report version-pin warnings, but the LeRobot dataset creation API (`LeRobotDataset.create()`, `add_frame()`, `save_episode()`) works correctly with both the bundled torch and newer versions (tested with torch 2.10.0+cu130).
+
 ---
 
 ## Data Collection Pipeline
