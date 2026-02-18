@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+import cv2
 import numpy as np
 import tyro
 
@@ -54,6 +55,7 @@ class Args:
     hostname: str = "127.0.0.1"
     hz: int = 30
     data_dir: str = "data/vla_dataset"
+    image_size: int = 256
     verbose: bool = False
     no_cameras: bool = False
 
@@ -66,12 +68,21 @@ class Args:
     skill_move_accel: float = 0.04
 
 
+def _resize_rgb(img: np.ndarray, size: int) -> np.ndarray:
+    """Resize RGB image to (size, size, 3) using INTER_AREA for downscaling."""
+    return cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA)
+
+
 def build_frame(
     obs: Dict[str, Any],
     camera_clients: Dict[str, ZMQClientCamera],
+    image_size: int = 256,
     use_obs_cameras: bool = True,
 ) -> Dict[str, Any]:
-    """Build a data frame from robot observations and camera images."""
+    """Build a data frame from robot observations and camera images.
+
+    Images are resized to (image_size, image_size). Depth is not stored.
+    """
     joints_full = obs["joint_positions"]
     joints_6 = list(joints_full[:6])
 
@@ -93,14 +104,12 @@ def build_frame(
 
     for name, cam in camera_clients.items():
         if use_obs_cameras and f"{name}_rgb" in obs:
-            frame[f"{name}_rgb"] = obs[f"{name}_rgb"]
-            frame[f"{name}_depth"] = obs[f"{name}_depth"]
+            rgb = obs[f"{name}_rgb"]
             frame[f"{name}_timestamp"] = obs.get(f"{name}_timestamp", frame_time)
         else:
-            ts, rgb, depth = cam.read()
-            frame[f"{name}_rgb"] = rgb
-            frame[f"{name}_depth"] = depth
+            ts, rgb, _depth = cam.read()
             frame[f"{name}_timestamp"] = ts
+        frame[f"{name}_rgb"] = _resize_rgb(rgb, image_size)
 
     return frame
 
@@ -108,10 +117,11 @@ def build_frame(
 def build_frame_from_obs_client(
     obs_client: ZMQClientRobot,
     camera_clients: Dict[str, ZMQClientCamera],
+    image_size: int = 256,
 ) -> Dict[str, Any]:
     """Build a data frame using the read-only obs client (for skill recording)."""
     robot_obs = obs_client.get_observations()
-    return build_frame(robot_obs, camera_clients, use_obs_cameras=False)
+    return build_frame(robot_obs, camera_clients, image_size, use_obs_cameras=False)
 
 
 def record_skill_thread(
@@ -120,6 +130,7 @@ def record_skill_thread(
     buffer: EpisodeBuffer,
     stop_event: threading.Event,
     hz: int = 30,
+    image_size: int = 256,
 ):
     """Background thread: records frames at ~30Hz during skill execution."""
     dt = 1.0 / hz
@@ -127,7 +138,7 @@ def record_skill_thread(
     while not stop_event.is_set():
         t0 = time.time()
         try:
-            frame = build_frame_from_obs_client(obs_client, camera_clients)
+            frame = build_frame_from_obs_client(obs_client, camera_clients, image_size)
             buffer.record_frame(frame)
             count += 1
         except Exception as e:
@@ -253,7 +264,7 @@ def main(args: Args):
         skill_stop_event = threading.Event()
         skill_rec_thread = threading.Thread(
             target=record_skill_thread,
-            args=(obs_client, camera_clients, buffer, skill_stop_event, args.hz),
+            args=(obs_client, camera_clients, buffer, skill_stop_event, args.hz, args.image_size),
             daemon=True,
         )
         skill_rec_thread.start()
@@ -518,7 +529,7 @@ def main(args: Args):
                 )
 
                 if has_new:
-                    frame = build_frame(obs, camera_clients)
+                    frame = build_frame(obs, camera_clients, args.image_size)
                     buffer.record_frame(frame)
                     if current_wrist_ts > last_wrist_ts:
                         last_wrist_ts = current_wrist_ts

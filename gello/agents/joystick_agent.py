@@ -85,8 +85,10 @@ class HOSASConfig:
     # Minimum gain when slider is fully down
     min_gain: float = 0.1
 
-    # Gripper step per cycle (normalized 0-1, matches GRIPPER_STEP=10 in 0-255)
-    gripper_step: float = 10.0 / 255.0
+    # Gripper step per cycle (normalized 0-1)
+    # joysticktst.py uses GRIPPER_STEP=10 at ~200Hz; ZMQ pipeline runs at 30Hz
+    # so scale up: 10/255 * (200/30) ≈ 0.26
+    gripper_step: float = 0.26
 
 
 class JoystickAgent(Agent):

@@ -80,7 +80,7 @@ class URRobot(Robot):
             accel: TCP acceleration in m/s^2.
             asynchronous: If True, return immediately (non-blocking).
         """
-        self.robot.moveL(list(pose), speed, accel, 0, 0, asynchronous)
+        self.robot.moveL(list(pose), speed, accel, asynchronous)
 
     def move_linear_path(
         self,

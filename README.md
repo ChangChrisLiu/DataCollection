@@ -157,6 +157,7 @@ Optional arguments:
 | `--ram-relative-count` | `15` | Number of relative waypoints in RAM skill |
 | `--skill-move-speed` | `0.1` | moveL speed during skill (m/s) |
 | `--skill-move-accel` | `0.04` | moveL acceleration during skill (m/s^2) |
+| `--image-size` | `256` | Resize captured images to NxN pixels |
 | `--no-cameras` | `false` | Robot-only mode for testing |
 | `--verbose` | `false` | Print joystick debug info |
 
@@ -302,11 +303,9 @@ Each `.pkl` frame contains:
     "joint_positions": [j0, ..., j5],      # 6 joint angles (radians)
     "tcp_pose": [x, y, z, rx, ry, rz],    # TCP pose, UR rotation vector
     "gripper_pos": int,                    # 0-255
-    "wrist_rgb": np.ndarray,              # (720, 1280, 3) uint8
-    "wrist_depth": np.ndarray,            # (720, 1280, 1) uint16
+    "wrist_rgb": np.ndarray,              # (256, 256, 3) uint8
     "wrist_timestamp": float,
-    "base_rgb": np.ndarray,               # (720, 1280, 3) uint8
-    "base_depth": np.ndarray,             # (720, 1280, 1) uint16
+    "base_rgb": np.ndarray,               # (256, 256, 3) uint8
     "base_timestamp": float,
 }
 ```
@@ -446,8 +445,8 @@ python scripts/convert_to_lerobot.py \
 **LeRobot Schema:**
 ```
 observation.state:              (7,)          float32  [q0-q5, gripper/255]
-observation.images.base_rgb:    (720,1280,3)  video    Base camera RGB
-observation.images.wrist_rgb:   (720,1280,3)  video    Wrist camera RGB
+observation.images.base_rgb:    (256,256,3)   video    Base camera RGB
+observation.images.wrist_rgb:   (256,256,3)   video    Wrist camera RGB
 action:                         (7,)          float32  [q0_next..q5_next, gripper_next/255]
 task:                           string                 Language instruction
 ```

@@ -21,8 +21,8 @@ OpenPI action format: ABSOLUTE next-step joint positions.
 
 Output schema:
     observation.state              (7,)          float32  [q0-q5, gripper/255]
-    observation.images.base_rgb    (720,1280,3)  video    base camera
-    observation.images.wrist_rgb   (720,1280,3)  video    wrist camera
+    observation.images.base_rgb    (256,256,3)   video    base camera
+    observation.images.wrist_rgb   (256,256,3)   video    wrist camera
     action                         (7,)          float32  [q0_next..q5_next, gripper_next/255]
     task                           string                 language instruction
 
@@ -71,12 +71,12 @@ TARGETS = {
 FEATURES = {
     "observation.images.base_rgb": {
         "dtype": "video",
-        "shape": (720, 1280, 3),
+        "shape": (256, 256, 3),
         "names": ["height", "width", "channel"],
     },
     "observation.images.wrist_rgb": {
         "dtype": "video",
-        "shape": (720, 1280, 3),
+        "shape": (256, 256, 3),
         "names": ["height", "width", "channel"],
     },
     "observation.state": {
@@ -114,12 +114,12 @@ FEATURES = {
 FEATURES_PNG = {
     "observation.images.base_rgb": {
         "dtype": "image",
-        "shape": (720, 1280, 3),
+        "shape": (256, 256, 3),
         "names": ["height", "width", "channel"],
     },
     "observation.images.wrist_rgb": {
         "dtype": "image",
-        "shape": (720, 1280, 3),
+        "shape": (256, 256, 3),
         "names": ["height", "width", "channel"],
     },
     "observation.state": FEATURES["observation.state"],
@@ -157,9 +157,9 @@ def convert_episode_frames(
         base_rgb = frame.get("base_rgb")
         wrist_rgb = frame.get("wrist_rgb")
         if base_rgb is None:
-            base_rgb = np.zeros((720, 1280, 3), dtype=np.uint8)
+            base_rgb = np.zeros((256, 256, 3), dtype=np.uint8)
         if wrist_rgb is None:
-            wrist_rgb = np.zeros((720, 1280, 3), dtype=np.uint8)
+            wrist_rgb = np.zeros((256, 256, 3), dtype=np.uint8)
 
         dataset.add_frame(
             {
@@ -348,7 +348,7 @@ def main():
     print(f"  Episodes skipped:   {skipped}")
     print(f"  Total frames:       {total_frames}")
     print(f"  FPS:                {args.fps}")
-    print(f"  Image resolution:   1280x720 (original)")
+    print(f"  Image resolution:   256x256")
     print(f"  Image format:       {'PNG' if args.use_png else 'MP4 video'}")
     print(f"  State dim:          7 (6 joints + gripper)")
     print(f"  Action dim:         7 (6 joints + gripper, absolute next-step)")

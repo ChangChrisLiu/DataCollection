@@ -19,11 +19,9 @@ Frame format (each element in the frame list):
         "joint_positions": list[float],
         "tcp_pose": list[float],
         "gripper_pos": int,            # 0-255
-        "wrist_rgb": np.ndarray,
-        "wrist_depth": np.ndarray,
+        "wrist_rgb": np.ndarray,       # (256, 256, 3) uint8
         "wrist_timestamp": float,
-        "base_rgb": np.ndarray,
-        "base_depth": np.ndarray,
+        "base_rgb": np.ndarray,        # (256, 256, 3) uint8
         "base_timestamp": float,
     }
 """
