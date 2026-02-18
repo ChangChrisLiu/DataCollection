@@ -181,7 +181,7 @@ class OAKDCamera(CameraDriver):
             applied = True
 
         lens_position = settings.get("lens_position")
-        if lens_position is not None:
+        if lens_position is not None and int(lens_position) >= 0:
             ctrl.setManualFocus(int(lens_position))
             applied = True
 
