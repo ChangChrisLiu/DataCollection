@@ -143,7 +143,7 @@ Starts async PUB/SUB camera publishers at 30Hz. The `--camera-settings` flag loa
 ### Step 3: Terminal 3 - Data Collection
 
 ```bash
-python experiments/run_dual_dataset.py
+python experiments/run_collection.py
 ```
 
 Optional arguments:
@@ -490,7 +490,7 @@ Features:
 ├── experiments/                      # Launch scripts
 │   ├── launch_nodes.py               # T1: Robot ZMQ server (dual-port)
 │   ├── launch_camera_nodes.py        # T2: Camera PUB/SUB publishers
-│   └── run_dual_dataset.py           # T3: Unified collection pipeline
+│   └── run_collection.py             # T3: Unified collection pipeline
 ├── gello/
 │   ├── agents/                       # Control agents
 │   │   ├── agent.py                  # Agent protocol (Action type)

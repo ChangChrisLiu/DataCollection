@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# experiments/run_dual_dataset.py
+# experiments/run_collection.py
 """VLA unified data collection pipeline (T4).
 
 Records a single frame stream with 4 phase labels:
@@ -25,7 +25,7 @@ Output per round:
 Terminal architecture:
   T1: python experiments/launch_nodes.py --robot ur
   T2: python experiments/launch_camera_nodes.py --camera-settings camera_settings.json
-  T4: python experiments/run_dual_dataset.py
+  T4: python experiments/run_collection.py
 """
 
 import threading
