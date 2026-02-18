@@ -4,11 +4,12 @@ A teleoperation data collection system for training Vision-Language-Action (VLA)
 
 ## System Overview
 
-Each data collection episode records a single, continuous frame stream annotated with **4 phase labels**:
+Each data collection episode records a single, continuous frame stream annotated with phase labels:
 
 | Phase | Description | When |
 |-------|-------------|------|
-| `teleop` | Human joystick control (approach) | Operator maneuvers to target |
+| `armed` | Recording ready, waiting for input | After pressing record button (no frames captured) |
+| `teleop` | Human joystick control (approach) | First joystick input after arming |
 | `skill` | Autonomous skill execution | Triggered by skill button |
 | `correction` | Human recovery after failed grasp | Activated on joystick input after grasp failure |
 | `skill_resume` | Skill resumes absolute waypoints | Skill button pressed after correction |
@@ -190,17 +191,17 @@ The left slider controls a speed gain multiplier: fully up = 100% speed, fully d
 ### Normal Data Collection (Per Episode)
 
 1. **Position the robot** near the target object using joystick teleop
-2. **Press Left Btn 25** — recording starts at 30Hz (camera-gated), phase: `teleop`
-3. **Teleoperate** to approach and align the gripper with the component
-4. **Press Right Btn 15** (CPU) or **Right Btn 16** (RAM) to trigger the skill:
+2. **Press Left Btn 25** — recording is **armed** (ready, no frames captured yet)
+3. **Move joystick** — recording starts at 30Hz (camera-gated), phase: `teleop`
+4. **Teleoperate** to approach and align the gripper with the component
+5. **Press Right Btn 15** (CPU) or **Right Btn 16** (RAM) to trigger the skill:
    - Phase transitions to `skill`
    - Skill executes autonomously with path blending and 30Hz concurrent recording
    - **Grasp verification** runs automatically (see below)
-5. **After skill completes**, press **Left Btn 34** (Home) to:
+6. **After skill completes**, press **Left Btn 34** (Home) to:
    - Save unified episode (all frames + phase metadata)
-   - Rate episode quality (g = Good / n = Not Good)
    - Move robot to home position
-6. **Repeat** from step 1 for the next episode
+7. **Repeat** from step 1 for the next episode
 
 ### Grasp Verification (Automatic)
 

@@ -59,6 +59,10 @@ class ZMQServerRobot:
                     result = self._robot.move_linear(**args)
                 elif method == "move_linear_path":
                     result = self._robot.move_linear_path(**args)
+                elif method == "set_gripper":
+                    result = self._robot.set_gripper(**args)
+                elif method == "get_actual_gripper_pos":
+                    result = self._robot.get_actual_gripper_pos()
                 elif method == "set_freedrive_mode":
                     result = self._robot.set_freedrive_mode(**args)
                 else:
@@ -125,6 +129,8 @@ class ZMQObsServerRobot:
                     result = self._robot.get_joint_state()
                 elif method == "get_tcp_pose_raw":
                     result = self._robot.get_tcp_pose_raw()
+                elif method == "get_actual_gripper_pos":
+                    result = self._robot.get_actual_gripper_pos()
                 elif method == "num_dofs":
                     result = self._robot.num_dofs()
                 else:
@@ -300,6 +306,24 @@ class ZMQClientRobot(Robot):
         }
         self._socket.send(pickle.dumps(request))
         pickle.loads(self._socket.recv())
+
+    def set_gripper(self, pos: int) -> None:
+        """Set gripper position (0-255) directly via socket, no RTDE."""
+        request = {
+            "method": "set_gripper",
+            "args": {"pos": pos},
+        }
+        self._socket.send(pickle.dumps(request))
+        pickle.loads(self._socket.recv())
+
+    def get_actual_gripper_pos(self) -> int:
+        """Read actual gripper position (0-255) from hardware via GET POS."""
+        request = {"method": "get_actual_gripper_pos"}
+        self._socket.send(pickle.dumps(request))
+        result = pickle.loads(self._socket.recv())
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(result["error"])
+        return result
 
     def set_freedrive_mode(self, enable: bool) -> None:
         """Enable or disable freedrive mode through ZMQ.

@@ -6,8 +6,8 @@ Records a single frame stream with 4 phase labels:
   teleop, skill, correction, skill_resume
 
 Workflow per round:
-  1. Press Start Recording (left btn 25) -> continuous recording begins
-  2. Teleoperate with HOSAS joystick (phase: teleop, ~30Hz)
+  1. Press Start Recording (left btn 25) -> recording ARMED (waiting)
+  2. Move joystick -> recording starts (phase: teleop, ~30Hz)
   3. Press Skill button (right btn 15=CPU, 16=RAM) -> phase: skill
      Skill executes with concurrent recording.
      a. If grasp verification fails -> recording paused, phase: correction
@@ -318,7 +318,7 @@ def main(args: Args):
                         last_base_ts = 0.0
                         episode_grasp_info = {}
                         active_skill_name = None
-                        print("\n[PIPELINE] Recording started!")
+                        print("\n[PIPELINE] Recording ARMED — move joystick to begin")
                     else:
                         print("[PIPELINE] Already recording.")
                     obs = env.get_obs()
@@ -354,10 +354,9 @@ def main(args: Args):
                             "skill_outcome": outcome,
                             **episode_grasp_info,
                         }
-                        episode_dir = writer.save_unified_episode(
+                        writer.save_unified_episode(
                             frames, segments, metadata=episode_meta
                         )
-                        writer.prompt_quality(episode_dir)
                         print("[PIPELINE] Recording saved.")
 
                     # Reset state
@@ -506,11 +505,17 @@ def main(args: Args):
             # ----------------------------------------------------------
             # Normal velocity control + recording
             # ----------------------------------------------------------
-            # Check if joystick has input (for correction detection)
+            # Check if joystick has input (for armed->teleop and correction detection)
             has_joystick_input = False
-            if isinstance(action, np.ndarray):
-                vel = action[:6] if len(action) > 6 else action
-                has_joystick_input = np.max(np.abs(vel)) > 0.001
+            if isinstance(action, dict) and action.get("type") == "velocity":
+                vel = np.asarray(action.get("velocity", np.zeros(6)))
+                grip = abs(action.get("gripper_vel", 0.0))
+                has_joystick_input = np.max(np.abs(vel)) > 0.001 or grip > 0.001
+
+            # Handle armed -> teleop transition on first joystick input
+            if buffer.phase == "armed" and has_joystick_input:
+                buffer.set_phase("teleop")
+                print("\n[PIPELINE] Joystick input detected — recording started!")
 
             # Handle grasp failure -> correction phase transition
             if grasp_failed and has_joystick_input:
@@ -551,6 +556,8 @@ def main(args: Args):
                     phase_label = "GRASP_FAILED"
                 elif skill_interrupted:
                     phase_label = "CORRECTION"
+                elif buffer.phase == "armed":
+                    phase_label = "ARMED"
                 else:
                     phase_label = buffer.phase.upper()
                 n_frames = buffer.num_frames

@@ -35,7 +35,9 @@ import numpy as np
 from gello.agents.agent import Action, Agent
 
 # Home position for UR5e (in joint radians, matching joysticktst.py)
-HOME_JOINTS_RAD = np.array([-1.613282, -1.802157, -1.189979, -1.72829, 1.552156, 3.058179])
+HOME_JOINTS_RAD = np.array(
+    [-1.613282, -1.802157, -1.189979, -1.72829, 1.552156, 3.058179]
+)
 HOME_GRIPPER_POS = 3  # Nearly open (0-255 scale)
 
 # ---------------------------------------------------------------------------

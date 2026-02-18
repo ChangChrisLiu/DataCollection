@@ -308,16 +308,14 @@ class CSVSkillExecutor:
         return True
 
     def _set_gripper(self, gripper_pos: int) -> None:
-        """Set gripper to the given 0-255 position."""
+        """Set gripper to the given 0-255 position via direct socket command.
+
+        Uses the dedicated set_gripper method which controls the gripper
+        via its socket interface, avoiding RTDE servoJ conflicts with
+        moveL/speedL.
+        """
         try:
-            joints = (
-                self._obs_client.get_joint_state()
-                if self._obs_client
-                else self._robot_client.get_joint_state()
-            )
-            joints_cmd = joints.copy()
-            joints_cmd[-1] = gripper_pos / 255.0
-            self._robot_client.command_joint_state(joints_cmd)
+            self._robot_client.set_gripper(gripper_pos)
             time.sleep(0.05)
         except Exception as e:
             print(f"[SkillExecutor] Gripper command failed: {e}")
@@ -325,16 +323,15 @@ class CSVSkillExecutor:
     def _check_grasp(self) -> Tuple[bool, int, int]:
         """Check if the grasp succeeded after verification waypoint.
 
+        Reads the ACTUAL gripper position from hardware (GET POS), not the
+        locally tracked value. If the gripper was commanded to open (230)
+        but an object blocks it, the actual position will be much lower.
+
         Returns:
             (success, commanded_pos, actual_pos_255)
         """
-        obs = (
-            self._obs_client.get_observations()
-            if self._obs_client
-            else self._robot_client.get_observations()
-        )
-        actual_01 = obs["gripper_position"][0]
-        actual_255 = int(round(actual_01 * 255))
+        client = self._obs_client if self._obs_client else self._robot_client
+        actual_255 = client.get_actual_gripper_pos()
         # If gripper reached near-open (> 200), nothing was grasped
         grasp_ok = actual_255 <= _GRASP_FAIL_THRESHOLD
         return grasp_ok, 230, actual_255  # 230 is the commanded open value

@@ -2,8 +2,9 @@
 """Unified episode buffer with phase-labeled recording.
 
 Replaces the dual-dataset buffer with a single frame stream annotated
-by phase labels. Four phases are supported:
+by phase labels. Five recording phases are supported:
 
+  - ``armed``:        Recording ready, waiting for joystick input
   - ``teleop``:       Human joystick control (approach)
   - ``skill``:        Autonomous skill execution
   - ``correction``:   Human correction after failed grasp
@@ -28,7 +29,7 @@ Frame format (each element in the frame list):
 
 from typing import Any, Dict, List, Tuple
 
-VALID_PHASES = {"idle", "teleop", "skill", "correction", "skill_resume"}
+VALID_PHASES = {"idle", "armed", "teleop", "skill", "correction", "skill_resume"}
 
 
 class EpisodeBuffer:
@@ -52,9 +53,9 @@ class EpisodeBuffer:
         """Begin a new recording episode. Clears all buffers."""
         self._frames = []
         self._phase_segments = []
-        self._phase = "teleop"
+        self._phase = "armed"
         self._segment_start = 0
-        print("[Buffer] Recording started (phase: teleop)")
+        print("[Buffer] Recording armed (waiting for joystick input)")
 
     def set_phase(self, phase: str) -> None:
         """Transition to a new phase, closing the current segment."""
@@ -79,7 +80,7 @@ class EpisodeBuffer:
 
     def record_frame(self, frame: Dict[str, Any]) -> None:
         """Record a single frame with the current phase label."""
-        if self._phase == "idle":
+        if self._phase in ("idle", "armed"):
             return
         frame["phase"] = self._phase
         self._frames.append(frame)
