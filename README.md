@@ -1,15 +1,27 @@
-# DataCollection: VLA Dual-Dataset Collection Pipeline
+# DataCollection: VLA Data Collection Pipeline for UR5e
 
-A teleoperation data collection system for training Vision-Language-Action (VLA) models, built on the [GELLO](https://github.com/wuphilipp/gello_software) framework. Features a distributed multi-process architecture with dual-camera capture, HOSAS joystick control, automated skill execution with interrupt/resume, and dual-dataset output for training both a high-level planner and a low-level executor.
+A teleoperation data collection system for training Vision-Language-Action (VLA) models, built on the [GELLO](https://github.com/wuphilipp/gello_software) framework. Features a distributed multi-process architecture with dual-camera capture, HOSAS joystick control, automated skill execution with path blending and grasp verification, and a unified phase-labeled recording format that produces training data for three model architectures: **OpenVLA**, **OpenVLA-OFT**, and **OpenPI**.
 
 ## System Overview
 
-Each data collection episode produces **two datasets** from a single round of teleoperation:
+Each data collection episode records a single, continuous frame stream annotated with **4 phase labels**:
 
-| Dataset | Contents | Purpose |
-|---------|----------|---------|
-| **VLA Planner** (`vla_planner/`) | Teleop frames + 3 stop-signal frames (gripper=255) | Teaches the model WHEN to call a skill |
-| **VLA Executor** (`vla_executor/`) | Teleop frames + full skill execution frames | Teaches the model the COMPLETE motion trajectory |
+| Phase | Description | When |
+|-------|-------------|------|
+| `teleop` | Human joystick control (approach) | Operator maneuvers to target |
+| `skill` | Autonomous skill execution | Triggered by skill button |
+| `correction` | Human recovery after failed grasp | Activated on joystick input after grasp failure |
+| `skill_resume` | Skill resumes absolute waypoints | Skill button pressed after correction |
+
+From this single recording, **three training datasets** are derived during conversion:
+
+| Training Target | Phases Included | Stop Signal | Purpose |
+|-----------------|----------------|-------------|---------|
+| **End-to-End** | all 4 phases | none | Full trajectory for VLA executor models |
+| **Planner** | teleop only | 3 frames appended | Teaches WHEN to call a skill |
+| **Correction** | correction only | 3 frames appended | Teaches recovery after grasp failure |
+
+Stop signals (3 copies of last frame with gripper=255) are **not stored** in raw recordings — they are synthesized during conversion.
 
 ## Hardware
 
@@ -23,11 +35,11 @@ Each data collection episode produces **two datasets** from a single round of te
 
 ## Architecture
 
-Four independent processes communicate over ZMQ, all running at **30Hz**:
+Three independent processes communicate over ZMQ:
 
 ```
 Terminal 1 ─ Robot Server
-  ├── Port 6001: Control server (moveL, speedL, servoJ, speed_stop)
+  ├── Port 6001: Control server (moveL, speedL, move_linear_path, speed_stop)
   └── Port 6002: Read-only observation server (get_observations, get_tcp_pose_raw)
 
 Terminal 2 ─ Camera Publishers (PUB/SUB)
@@ -35,10 +47,10 @@ Terminal 2 ─ Camera Publishers (PUB/SUB)
   └── Port 5001: Base camera (OAK-D Pro)
 
 Terminal 3 ─ Data Collection Pipeline
-  └── Connects to T1 + T2, runs joystick agent, skill executor, dataset writer
+  └── Connects to T1 + T2, runs joystick agent, skill executor, episode buffer, dataset writer
 ```
 
-The dual-port robot architecture (6001 control + 6002 read-only) allows observation polling to remain responsive even during blocking skill execution. Both servers wrap the same robot instance but access different RTDE interfaces (Control vs Receive), which is thread-safe.
+The dual-port robot architecture (6001 control + 6002 read-only) allows observation polling during blocking skill execution. Both servers wrap the same robot instance but access different RTDE interfaces (Control vs Receive), which is thread-safe.
 
 ## Installation
 
@@ -71,15 +83,24 @@ pip install tyro          # CLI argument parsing
 pip install scipy         # Rotation transforms
 ```
 
+For data conversion (see [Data Conversion](#data-conversion)):
+```bash
+# RLDS / OpenVLA (conda env recommended)
+pip install tensorflow tensorflow-datasets tensorflow-hub
+
+# LeRobot / OpenPI
+pip install lerobot
+```
+
 ---
 
 ## Data Collection Pipeline
 
 ### Step 0: Calibrate Camera Settings (One-Time)
 
-Lock exposure, white balance, and gain to prevent out-of-distribution (OOD) issues across episodes. Run this once before each session (or when lighting changes).
+Lock exposure, white balance, and gain to prevent out-of-distribution (OOD) issues across episodes. Run once before each session (or when lighting changes).
 
-**Auto mode** (recommended, no GUI needed):
+**Auto mode** (recommended):
 
 ```bash
 python scripts/calibrate_cameras.py --auto
@@ -106,7 +127,7 @@ python experiments/launch_nodes.py --robot ur --robot-ip 10.125.144.209
 ```
 
 Starts dual ZMQ servers:
-- Port 6001: Full control (moveL, speedL, servoJ, speed_stop, set_freedrive_mode)
+- Port 6001: Full control (moveL, move_linear_path, speedL, servoJ, speed_stop, set_freedrive_mode)
 - Port 6002: Read-only observations (get_observations, get_tcp_pose_raw, get_joint_state)
 
 ### Step 2: Terminal 2 - Camera Servers
@@ -131,8 +152,8 @@ Optional arguments:
 | `--data-dir` | `data/vla_dataset` | Output directory for episodes |
 | `--cpu-skill-csv` | `CPU_Skills.csv` | Path to CPU extraction skill CSV |
 | `--ram-skill-csv` | `RAM_Skills.csv` | Path to RAM extraction skill CSV |
-| `--cpu-relative-count` | `19` | Number of relative waypoints in CPU skill |
-| `--ram-relative-count` | `14` | Number of relative waypoints in RAM skill |
+| `--cpu-relative-count` | `20` | Number of relative waypoints in CPU skill |
+| `--ram-relative-count` | `15` | Number of relative waypoints in RAM skill |
 | `--skill-move-speed` | `0.1` | moveL speed during skill (m/s) |
 | `--skill-move-accel` | `0.04` | moveL acceleration during skill (m/s^2) |
 | `--no-cameras` | `false` | Robot-only mode for testing |
@@ -167,32 +188,47 @@ The left slider controls a speed gain multiplier: fully up = 100% speed, fully d
 ### Normal Data Collection (Per Episode)
 
 1. **Position the robot** near the target object using joystick teleop
-2. **Press Left Btn 25** — recording starts at 30Hz (camera-gated)
+2. **Press Left Btn 25** — recording starts at 30Hz (camera-gated), phase: `teleop`
 3. **Teleoperate** to approach and align the gripper with the component
 4. **Press Right Btn 15** (CPU) or **Right Btn 16** (RAM) to trigger the skill:
-   - 3 stop-signal frames are automatically inserted (same pose, gripper=255)
-   - Skill executes autonomously using async moveL with concurrent 30Hz recording
+   - Phase transitions to `skill`
+   - Skill executes autonomously with path blending and 30Hz concurrent recording
+   - **Grasp verification** runs automatically (see below)
 5. **After skill completes**, press **Left Btn 34** (Home) to:
-   - Save both datasets (vla_planner + vla_executor)
+   - Save unified episode (all frames + phase metadata)
    - Rate episode quality (g = Good / n = Not Good)
    - Move robot to home position
 6. **Repeat** from step 1 for the next episode
 
-### Interrupt/Resume Flow (If Skill Fails Mid-Execution)
+### Grasp Verification (Automatic)
+
+Each skill CSV contains a verification waypoint that lifts the gripper 5cm with fingers open after the grasp close. The executor checks the actual gripper position:
+
+- **Pass** (actual < 200/255): Object is held. Skill continues normally.
+- **Fail** (actual >= 200/255): Fingers closed on nothing. Recording pauses automatically and the pipeline waits for correction.
+
+### Correction Flow (After Grasp Failure)
+
+1. Grasp verification fails — recording stops, message: `"GRASP FAILED — provide correction with joystick"`
+2. Move joystick to correct position — recording resumes with phase: `correction`
+3. Press the **same skill button** to resume:
+   - Phase transitions to `skill_resume`
+   - Only absolute (base-frame) waypoints execute (relative already completed)
+4. After skill completes, press **Home** to save
+
+### Manual Interrupt Flow
 
 1. During skill execution, press **Left Btn 16** to interrupt
-2. Robot stops immediately via `speed_stop()` (async moveL enables mid-waypoint stopping)
-3. Manually correct position with joystick (frames continue recording as skill data)
-4. Press the **same skill button** to resume:
-   - Skips relative waypoints (already completed)
-   - Executes only absolute (base-frame) waypoints
-5. If correction is impossible, press **Left Btn 34** (Home) to abandon and save what you have
+2. Robot stops immediately via `speed_stop()`, phase transitions to `correction`
+3. Manually correct position with joystick (correction frames recorded)
+4. Press the **same skill button** to resume with absolute waypoints only
+5. If correction is impossible, press **Home** to save what you have
 
 ---
 
 ## Skill System
 
-Skills replay pre-recorded manipulation trajectories from CSV files. Each CSV contains waypoints with joint angles, TCP poses, and gripper positions.
+Skills replay pre-recorded manipulation trajectories from CSV files with **path-based blending** for smooth motion.
 
 ### CSV Format
 
@@ -203,7 +239,7 @@ Skills replay pre-recorded manipulation trajectories from CSV files. Each CSV co
 | tcp_x-tcp_rz | TCP pose [x, y, z, rx, ry, rz] in base frame |
 | gripper_pos | Gripper position (0-255) |
 | skill_id | Skill identifier |
-| image_file | Associated image path |
+| image_file | Associated image path (or `verification_wp` for verification waypoints) |
 
 ### Relative vs Absolute Waypoints
 
@@ -214,61 +250,218 @@ Each skill CSV is split into two sections:
 
 - **Absolute section** (remaining waypoints): Used as-is in base-frame coordinates. Typically the transfer-to-destination phase.
 
+### Path Blending
+
+Consecutive waypoints with the same gripper value are grouped into path segments and executed as a single `moveL(path)` call with blend radii for smooth trajectories:
+
+- **Default blend radius**: 0.002m (2mm)
+- **First 2 waypoints**: 0.0001m (0.1mm) — sensitive approach
+- **First/last of segment**: 0.0m (exact stop)
+- **Near gripper changes**: 0.0m (exact positioning)
+
 ### Current Skills
 
 | Skill | Button | CSV File | Relative Count | Total Waypoints |
 |-------|--------|----------|----------------|-----------------|
-| CPU Extraction | Right 15 | `CPU_Skills.csv` | 19 | 23 |
-| RAM Extraction | Right 16 | `RAM_Skills.csv` | 14 | 20 |
+| CPU Extraction | Right 15 | `CPU_Skills.csv` | 20 | 23 |
+| RAM Extraction | Right 16 | `RAM_Skills.csv` | 15 | 19 |
 
 ---
 
 ## Output Data Format
 
+### Unified Episode Structure
+
 ```
 data/vla_dataset/
-  episode_0217_143000/
-    vla_planner/
-      frame_0000_20260217_143000_000000.pkl
-      frame_0001_20260217_143000_033333.pkl
-      ...
-      episode_meta.json
-    vla_executor/
-      frame_0000_20260217_143000_000000.pkl
-      frame_0001_20260217_143000_033333.pkl
-      ...
-      episode_meta.json
+  episode_0218_143000/
+    frame_0000.pkl   <- phase: "teleop"
+    ...
+    frame_0044.pkl   <- phase: "teleop"
+    frame_0045.pkl   <- phase: "skill"
+    ...
+    frame_0055.pkl   <- phase: "skill" (grasp failed, recording paused)
+    frame_0056.pkl   <- phase: "correction" (resumed on joystick input)
+    ...
+    frame_0065.pkl   <- phase: "correction"
+    frame_0066.pkl   <- phase: "skill_resume"
+    ...
+    frame_0070.pkl   <- phase: "skill_resume"
+    episode_meta.json
 ```
+
+### Frame Format (`.pkl`)
 
 Each `.pkl` frame contains:
 
 ```python
 {
     "timestamp": float,                    # Unix timestamp
+    "phase": str,                          # "teleop" | "skill" | "correction" | "skill_resume"
     "joint_positions": [j0, ..., j5],      # 6 joint angles (radians)
     "tcp_pose": [x, y, z, rx, ry, rz],    # TCP pose, UR rotation vector
-    "gripper_pos": int,                    # 0-255 (255 = stop signal)
+    "gripper_pos": int,                    # 0-255
     "wrist_rgb": np.ndarray,              # (720, 1280, 3) uint8
     "wrist_depth": np.ndarray,            # (720, 1280, 1) uint16
+    "wrist_timestamp": float,
     "base_rgb": np.ndarray,               # (720, 1280, 3) uint8
     "base_depth": np.ndarray,             # (720, 1280, 1) uint16
+    "base_timestamp": float,
 }
 ```
 
-### Metadata (`episode_meta.json`)
+### Episode Metadata (`episode_meta.json`)
 
 ```json
 {
-    "phase": "post_skill",
-    "num_teleop_frames": 150,
-    "num_stop_frames": 3,
-    "num_skill_frames": 45,
-    "stop_signal_value": 255,
-    "type": "vla_planner",
-    "num_frames_saved": 153,
-    "saved_at": "2026-02-17T14:30:15"
+    "skill_name": "cpu",
+    "skill_outcome": "completed_after_correction",
+    "grasp_verified": true,
+    "grasp_commanded": 132,
+    "grasp_actual": 85,
+    "phase_counts": {"teleop": 45, "skill": 11, "correction": 10, "skill_resume": 5},
+    "phase_segments": [
+        {"phase": "teleop", "start": 0, "end": 44},
+        {"phase": "skill", "start": 45, "end": 55},
+        {"phase": "correction", "start": 56, "end": 65},
+        {"phase": "skill_resume", "start": 66, "end": 70}
+    ],
+    "num_frames": 71,
+    "fps": 30,
+    "saved_at": "2026-02-18T14:30:15"
 }
 ```
+
+Skill outcomes: `"completed"`, `"completed_after_correction"`, `"no_skill"`, `"incomplete"`
+
+---
+
+## Data Conversion
+
+Raw `.pkl` episodes are converted to model-specific formats locally, then transferred to the training server. This avoids NumPy version compatibility issues since TFRecords and LeRobot datasets use version-agnostic serialization.
+
+### Conversion Pipeline
+
+```
+.pkl episodes (local)
+      │
+      ├──> RLDS TFRecords (for OpenVLA / OpenVLA-OFT)
+      │       scripts/convert_to_rlds.py
+      │       └── ~/tensorflow_datasets/ur5e_vla_<target>/
+      │
+      └──> LeRobot v3 datasets (for OpenPI)
+              scripts/convert_to_lerobot.py
+              └── HuggingFace Hub: ChangChrisLiu/ur5e_<target>
+```
+
+During conversion, the following processing is applied:
+1. **Phase filtering** — select frames by phase label(s)
+2. **Stop signal synthesis** — 3 copies of last frame with gripper=255
+3. **No-op frame removal** — drop frames where joints haven't changed (threshold: 1e-4 rad)
+4. **Delta joint computation** — for RLDS action format
+5. **Image resizing** — 256x256 for RLDS (configurable)
+
+### RLDS Conversion (OpenVLA / OpenVLA-OFT)
+
+Uses TFDS `GeneratorBasedBuilder` following the [kpertsch/rlds_dataset_builder](https://github.com/kpertsch/rlds_dataset_builder) template. Three builder modules in `scripts/`:
+
+| Builder | Directory | Phase Filter | Stop Signal |
+|---------|-----------|-------------|-------------|
+| `ur5e_vla_e2e` | `scripts/ur5e_vla_e2e/` | all phases | no |
+| `ur5e_vla_planner` | `scripts/ur5e_vla_planner/` | teleop | yes (3 frames) |
+| `ur5e_vla_correction` | `scripts/ur5e_vla_correction/` | correction | yes (3 frames) |
+
+All three inherit from `scripts/rlds_builder_base.py` which defines the shared RLDS schema.
+
+**RLDS Schema:**
+```
+observation.image:          (256, 256, 3) uint8   Base camera RGB (JPEG)
+observation.wrist_image:    (256, 256, 3) uint8   Wrist camera RGB (JPEG)
+observation.state:          (8,)          float32  [q0-q5, 0.0, gripper_0to1]
+action:                     (6,)          float32  Delta joint positions [dq0-dq5]
+action_gripper:             (1,)          float32  Gripper position 0-1
+language_instruction:       string                 Task description
+language_embedding:         (512,)        float32  Universal Sentence Encoder
+```
+
+**Build commands:**
+
+```bash
+# Build a single target
+python scripts/convert_to_rlds.py \
+    --target planner \
+    --data-path data/vla_dataset \
+    --task "Pick up the CPU and place it in the socket"
+
+# Build all three targets
+python scripts/convert_to_rlds.py \
+    --target all \
+    --data-path data/vla_dataset \
+    --task "Pick up the CPU and place it in the socket"
+
+# Custom image size (224 for base OpenVLA, 256 for OFT)
+python scripts/convert_to_rlds.py \
+    --target planner \
+    --data-path data/vla_dataset \
+    --task "Pick up the CPU" \
+    --image-size 224
+```
+
+**Transfer to server:**
+
+```bash
+rsync -avz ~/tensorflow_datasets/ur5e_vla_planner/ server:~/tensorflow_datasets/ur5e_vla_planner/
+```
+
+**Verify:**
+
+```bash
+python -c "
+import tensorflow_datasets as tfds
+b = tfds.builder('ur5e_vla_planner', data_dir='$HOME/tensorflow_datasets')
+ds = b.as_dataset(split='train')
+for traj in ds.take(1):
+    for step in traj['steps']:
+        print('image:', step['observation']['image'].shape)        # (256,256,3)
+        print('wrist:', step['observation']['wrist_image'].shape)  # (256,256,3)
+        print('state:', step['observation']['state'].shape)        # (8,)
+        print('action:', step['action'].shape)                     # (6,)
+        print('gripper:', step['action_gripper'].shape)            # (1,)
+        break
+"
+```
+
+### LeRobot Conversion (OpenPI)
+
+```bash
+python scripts/convert_to_lerobot.py \
+    --target planner \
+    --data-dir data/vla_dataset \
+    --repo-id ChangChrisLiu/ur5e_planner \
+    --task "Pick up the CPU and place it in the socket" \
+    --fps 30
+```
+
+**LeRobot Schema:**
+```
+observation.state:              (7,)          float32  [q0-q5, gripper/255]
+observation.images.base_rgb:    (720,1280,3)  video    Base camera RGB
+observation.images.wrist_rgb:   (720,1280,3)  video    Wrist camera RGB
+action:                         (7,)          float32  [q0_next..q5_next, gripper_next/255]
+task:                           string                 Language instruction
+```
+
+Options:
+- `--target` — `e2e`, `planner`, `correction`
+- `--keep-noops` — disable no-op frame removal
+- `--push` — push to HuggingFace Hub after conversion
+
+### Dataset Registration (OpenVLA / OpenVLA-OFT)
+
+The three RLDS datasets are registered in both `/home/chris/Sibo/openvla/` and `/home/chris/Sibo/openvla-oft/`:
+
+- **`prismatic/vla/datasets/rlds/oxe/configs.py`** — dataset configurations (JOINT state encoding, JOINT_POS action encoding, image keys)
+- **`prismatic/vla/datasets/rlds/oxe/transforms.py`** — reuses `ur5e_disassembly_dataset_transform` (takes 6D delta joints + appends inverted gripper from state → 7D action)
 
 ---
 
@@ -297,11 +490,11 @@ Features:
 ├── experiments/                      # Launch scripts
 │   ├── launch_nodes.py               # T1: Robot ZMQ server (dual-port)
 │   ├── launch_camera_nodes.py        # T2: Camera PUB/SUB publishers
-│   └── run_dual_dataset.py           # T3: Main collection pipeline
+│   └── run_dual_dataset.py           # T3: Unified collection pipeline
 ├── gello/
 │   ├── agents/                       # Control agents
 │   │   ├── agent.py                  # Agent protocol (Action type)
-│   │   ├── joystick_agent.py         # HOSAS dual-stick (velocity control)
+│   │   ├── joystick_agent.py         # HOSAS dual-stick (velocity + interrupt)
 │   │   ├── gello_agent.py            # GELLO Dynamixel (joint-space)
 │   │   ├── spacemouse_agent.py       # 3Dconnexion SpaceMouse
 │   │   └── zmq_agent.py              # ZMQ client wrapper
@@ -311,26 +504,34 @@ Features:
 │   │   └── oakd_camera.py            # Luxonis OAK-D Pro
 │   ├── robots/                       # Robot interfaces
 │   │   ├── robot.py                  # Robot protocol
-│   │   └── ur.py                     # UR5e (RTDE, async moveL support)
+│   │   └── ur.py                     # UR5e (RTDE, moveL path blending)
 │   ├── skills/                       # Skill execution
-│   │   └── csv_skill_executor.py     # CSV waypoint replay with interrupt
+│   │   └── csv_skill_executor.py     # CSV waypoint replay (path blending, grasp verification)
 │   ├── data_utils/                   # Data pipeline
-│   │   ├── dual_dataset_buffer.py    # Teleop + skill frame management
-│   │   └── dataset_writer.py         # Pickle + metadata persistence
+│   │   ├── episode_buffer.py         # Phase-labeled recording buffer
+│   │   ├── dataset_writer.py         # Unified + legacy episode persistence
+│   │   └── dual_dataset_buffer.py    # Legacy dual-buffer (deprecated)
 │   ├── zmq_core/                     # ZMQ networking
-│   │   ├── robot_node.py             # Robot server/client (dual-port)
+│   │   ├── robot_node.py             # Robot server/client (dual-port, path support)
 │   │   └── camera_node.py            # Camera PUB/SUB client
 │   ├── utils/                        # Utilities
 │   │   └── transform_utils.py        # SE(3) transforms for skill replay
 │   └── env.py                        # RobotEnv (rate-limited step loop)
-├── scripts/                          # Calibration & testing
+├── scripts/                          # Conversion & calibration
 │   ├── calibrate_cameras.py          # Camera settings auto-detect/manual
+│   ├── conversion_utils.py           # Shared conversion utilities
+│   ├── rlds_builder_base.py          # Shared TFDS GeneratorBasedBuilder base
+│   ├── ur5e_vla_e2e/                 # RLDS builder: end-to-end
+│   ├── ur5e_vla_planner/             # RLDS builder: planner
+│   ├── ur5e_vla_correction/          # RLDS builder: correction
+│   ├── convert_to_rlds.py            # RLDS conversion wrapper
+│   ├── convert_to_lerobot.py         # LeRobot conversion
 │   └── test_dual_camera.py           # Camera connectivity test
 ├── configs/                          # Generated config files
-│   └── camera_settings.json          # Saved camera parameters (auto-generated)
+│   └── camera_settings.json          # Saved camera parameters
 ├── joysticktst.py                    # Standalone HOSAS test (direct RTDE)
-├── CPU_Skills.csv                    # CPU extraction skill waypoints
-├── RAM_Skills.csv                    # RAM extraction skill waypoints
+├── CPU_Skills.csv                    # CPU extraction skill (20 rel + 3 abs)
+├── RAM_Skills.csv                    # RAM extraction skill (15 rel + 4 abs)
 └── ros2/                             # ROS 2 packages for Franka FR3
 ```
 
