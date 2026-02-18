@@ -40,7 +40,7 @@ Three independent processes communicate over ZMQ:
 
 ```
 Terminal 1 ─ Robot Server
-  ├── Port 6001: Control server (moveL, speedL, move_linear_path, speed_stop)
+  ├── Port 6001: Control server (moveL, speedL, move_linear_path, speed_stop, stop_linear)
   └── Port 6002: Read-only observation server (get_observations, get_tcp_pose_raw)
 
 Terminal 2 ─ Camera Publishers (PUB/SUB)
@@ -129,7 +129,7 @@ python experiments/launch_nodes.py --robot ur --robot-ip 10.125.144.209
 ```
 
 Starts dual ZMQ servers:
-- Port 6001: Full control (moveL, move_linear_path, speedL, servoJ, speed_stop, set_freedrive_mode)
+- Port 6001: Full control (moveL, move_linear_path, speedL, servoJ, speed_stop, stop_linear, set_freedrive_mode)
 - Port 6002: Read-only observations (get_observations, get_tcp_pose_raw, get_joint_state)
 
 ### Step 2: Terminal 2 - Camera Servers
@@ -152,6 +152,8 @@ Optional arguments:
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--data-dir` | `data/vla_dataset` | Output directory for episodes |
+| `--control-hz` | `200` | Joystick control loop rate (Hz) |
+| `--record-hz` | `30` | Recording frame rate (Hz) |
 | `--cpu-skill-csv` | `CPU_Skills.csv` | Path to CPU extraction skill CSV |
 | `--ram-skill-csv` | `RAM_Skills.csv` | Path to RAM extraction skill CSV |
 | `--cpu-relative-count` | `20` | Number of relative waypoints in CPU skill |
@@ -176,10 +178,10 @@ LEFT STICK                              RIGHT STICK
                                            Mini Y (ax4) -> TCP Rx rotation
 
 LEFT BUTTONS                            RIGHT BUTTONS
-  Btn 25: Start recording                 Btn 15: Trigger CPU skill
-  Btn 34: Home + stop + save              Btn 16: Trigger RAM skill
-  Btn 38: Vertical reorient               Btn 17: Connector skill (reserved)
-  Btn 16: Interrupt active skill          Btn 18: Skill 4 (reserved)
+  Btn 25: Start recording                 Btn 34: Trigger CPU skill
+  Btn 34: Home + stop + save              Btn 38: Trigger RAM skill
+  Btn 38: Vertical reorient
+  Btn 16: Interrupt active skill
 ```
 
 The left slider controls a speed gain multiplier: fully up = 100% speed, fully down = 10% speed. All axes have a 0.05 deadzone and are calibrated at startup.
@@ -194,35 +196,40 @@ The left slider controls a speed gain multiplier: fully up = 100% speed, fully d
 2. **Press Left Btn 25** — recording is **armed** (ready, no frames captured yet)
 3. **Move joystick** — recording starts at 30Hz (camera-gated), phase: `teleop`
 4. **Teleoperate** to approach and align the gripper with the component
-5. **Press Right Btn 15** (CPU) or **Right Btn 16** (RAM) to trigger the skill:
+5. **Press Right Btn 34** (CPU) or **Right Btn 38** (RAM) to trigger the skill:
    - Phase transitions to `skill`
    - Skill executes autonomously with path blending and 30Hz concurrent recording
    - **Grasp verification** runs automatically (see below)
-6. **After skill completes**, press **Left Btn 34** (Home) to:
-   - Save unified episode (all frames + phase metadata)
-   - Move robot to home position
+6. **After skill completes** — episode auto-saves and robot moves home automatically
+   - **Left Btn 34** (Home) available as fallback if needed
 7. **Repeat** from step 1 for the next episode
 
 ### Grasp Verification (Automatic)
 
-Each skill CSV contains a verification waypoint that lifts the gripper 5cm with fingers open after the grasp close. The executor checks the actual gripper position:
+Each skill CSV contains a verification waypoint that lifts the gripper 5cm after the grasp close. The executor checks the actual gripper position against a per-skill threshold:
 
-- **Pass** (actual < 200/255): Object is held. Skill continues normally.
-- **Fail** (actual >= 200/255): Fingers closed on nothing. Recording pauses automatically and the pipeline waits for correction.
+| Skill | Grasp Close | Threshold | Pass Condition |
+|-------|-------------|-----------|----------------|
+| CPU | 165 | 150 | actual < 150 (object blocking fingers) |
+| RAM | 225 | 225 | actual < 225 (object blocking fingers) |
+
+- **Pass**: Object is held. Skill continues normally.
+- **Fail**: Fingers closed on nothing (actual >= threshold). Recording pauses automatically and the pipeline waits for correction.
 
 ### Correction Flow (After Grasp Failure)
 
 1. Grasp verification fails — recording stops, message: `"GRASP FAILED — provide correction with joystick"`
-2. Move joystick to correct position — recording resumes with phase: `correction`
-3. Press the **same skill button** to resume:
+2. Gripper speed stays at 128/255 (slow) for precise correction control
+3. Move joystick to correct position — recording resumes with phase: `correction`
+4. Press the **same skill button** to resume:
    - Phase transitions to `skill_resume`
    - Only absolute (base-frame) waypoints execute (relative already completed)
-4. After skill completes, press **Home** to save
+5. After skill completes — auto-saves and moves home
 
 ### Manual Interrupt Flow
 
 1. During skill execution, press **Left Btn 16** to interrupt
-2. Robot stops immediately via `speed_stop()`, phase transitions to `correction`
+2. Robot stops immediately, phase transitions to `correction`
 3. Manually correct position with joystick (correction frames recorded)
 4. Press the **same skill button** to resume with absolute waypoints only
 5. If correction is impossible, press **Home** to save what you have
@@ -255,19 +262,20 @@ Each skill CSV is split into two sections:
 
 ### Path Blending
 
-Consecutive waypoints with the same gripper value are grouped into path segments and executed as a single `moveL(path)` call with blend radii for smooth trajectories:
+The **first segment** (approach, before any gripper change) uses `moveL(path)` with blend radii for smooth trajectories:
 
 - **Default blend radius**: 0.002m (2mm)
 - **First 2 waypoints**: 0.0001m (0.1mm) — sensitive approach
 - **First/last of segment**: 0.0m (exact stop)
-- **Near gripper changes**: 0.0m (exact positioning)
+
+**After any gripper change** (grasp/release), subsequent segments use individual `moveL()` per waypoint instead of path blending. This prevents protective stops on short post-grasp segments (e.g. the 5cm verification lift) where path blending can fail due to position/load changes after gripping.
 
 ### Current Skills
 
-| Skill | Button | CSV File | Relative Count | Total Waypoints |
-|-------|--------|----------|----------------|-----------------|
-| CPU Extraction | Right 15 | `CPU_Skills.csv` | 20 | 23 |
-| RAM Extraction | Right 16 | `RAM_Skills.csv` | 15 | 19 |
+| Skill | Button | CSV File | Relative Count | Total Waypoints | Grasp Close | Grasp Threshold |
+|-------|--------|----------|----------------|-----------------|-------------|-----------------|
+| CPU Extraction | Right 34 | `CPU_Skills.csv` | 20 | 23 | 165 | 150 |
+| RAM Extraction | Right 38 | `RAM_Skills.csv` | 15 | 19 | 225 | 225 |
 
 ---
 
@@ -277,7 +285,7 @@ Consecutive waypoints with the same gripper value are grouped into path segments
 
 ```
 data/vla_dataset/
-  episode_0218_143000/
+  episode_cpu_0218_143000/
     frame_0000.pkl   <- phase: "teleop"
     ...
     frame_0044.pkl   <- phase: "teleop"
@@ -477,9 +485,9 @@ python joysticktst.py
 ```
 
 Features:
-- Direct RTDE control (no server processes needed)
+- Direct RTDE control at 200Hz (no server processes needed)
 - Full HOSAS mapping with calibration
-- Skill execution with interrupt/resume
+- Skill execution with interrupt/resume (Right Btn 34=CPU, Right Btn 38=RAM)
 - CSV waypoint recording
 - Camera preview (optional, RealSense only)
 
@@ -491,7 +499,7 @@ Features:
 ├── experiments/                      # Launch scripts
 │   ├── launch_nodes.py               # T1: Robot ZMQ server (dual-port)
 │   ├── launch_camera_nodes.py        # T2: Camera PUB/SUB publishers
-│   └── run_collection.py             # T3: Unified collection pipeline
+│   └── run_collection.py             # T3: Unified collection pipeline (200Hz control / 30Hz record)
 ├── gello/
 │   ├── agents/                       # Control agents
 │   │   ├── agent.py                  # Agent protocol (Action type)
@@ -505,7 +513,7 @@ Features:
 │   │   └── oakd_camera.py            # Luxonis OAK-D Pro
 │   ├── robots/                       # Robot interfaces
 │   │   ├── robot.py                  # Robot protocol
-│   │   └── ur.py                     # UR5e (RTDE, moveL path blending)
+│   │   └── ur.py                     # UR5e (RTDE, moveL, stopL, path blending)
 │   ├── skills/                       # Skill execution
 │   │   └── csv_skill_executor.py     # CSV waypoint replay (path blending, grasp verification)
 │   ├── data_utils/                   # Data pipeline
@@ -530,7 +538,7 @@ Features:
 │   └── test_dual_camera.py           # Camera connectivity test
 ├── configs/                          # Generated config files
 │   └── camera_settings.json          # Saved camera parameters
-├── joysticktst.py                    # Standalone HOSAS test (direct RTDE)
+├── joysticktst.py                    # Standalone HOSAS test (direct RTDE, 200Hz)
 ├── CPU_Skills.csv                    # CPU extraction skill (20 rel + 3 abs)
 ├── RAM_Skills.csv                    # RAM extraction skill (15 rel + 4 abs)
 └── ros2/                             # ROS 2 packages for Franka FR3
@@ -538,15 +546,16 @@ Features:
 
 ## Frequency Summary
 
-All components run at **30Hz**, synchronized by camera frame rate:
+The control loop and recording are decoupled for fluent joystick control, matching `joysticktst.py`:
 
 | Component | Rate | Notes |
 |-----------|------|-------|
+| **Joystick control loop** | **200Hz** | `speedL` velocity commands + gripper (matches joysticktst.py) |
+| Gripper step | 10 units/cycle | `GRIPPER_STEP=10` at 200Hz, identical to joysticktst.py |
 | Camera publishers | 30Hz | Hardware-limited (D435i + OAK-D Pro) |
-| Pipeline main loop | 30Hz | `env.py` Rate class, camera-frame gated |
-| Skill recording thread | 30Hz | Concurrent recording during skill execution |
-| Robot observations | 30Hz | Polled at loop rate |
-| Joystick input polling | 200Hz | Internal only (responsiveness), consumed at 30Hz |
+| **Recording (teleop)** | **30Hz** | Camera-frame gated (only records on new timestamp) |
+| **Skill recording thread** | **30Hz** | Concurrent recording during skill execution |
+| Robot observations | 200Hz | Polled at control rate; cameras return cached frames |
 
 ## Citation
 
