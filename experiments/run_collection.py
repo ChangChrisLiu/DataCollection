@@ -33,9 +33,9 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-import cv2
 import numpy as np
 import tyro
+from PIL import Image
 
 from gello.data_utils.episode_buffer import EpisodeBuffer
 from gello.data_utils.dataset_writer import DatasetWriter
@@ -69,8 +69,8 @@ class Args:
 
 
 def _resize_rgb(img: np.ndarray, size: int) -> np.ndarray:
-    """Resize RGB image to (size, size, 3) using INTER_AREA for downscaling."""
-    return cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA)
+    """Resize RGB image to (size, size, 3) using PIL LANCZOS."""
+    return np.array(Image.fromarray(img).resize((size, size), Image.LANCZOS))
 
 
 def build_frame(
