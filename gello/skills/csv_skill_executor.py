@@ -1,31 +1,32 @@
 # gello/skills/csv_skill_executor.py
-"""CSV-based skill executor for replaying recorded manipulation trajectories.
+"""CSV-based skill executor with path blending and grasp verification.
 
-Loads waypoints from a CSV file (same format as joysticktst.py recordings).
-The CSV is split into two sections:
+Loads waypoints from a CSV file and executes them using UR moveL path
+blending for smooth trajectories. Waypoints are segmented by gripper
+value — each segment of consecutive same-gripper waypoints is executed
+as a single blended path, with gripper changes between segments.
 
+Key features:
+  - **Path blending**: Groups waypoints by gripper value into sub-paths
+    executed with moveL(path) and blend radii for smooth motion.
+  - **Grasp verification**: After the verification waypoint (marked in
+    CSV), checks actual gripper position. If the grasp failed (gripper
+    near open), triggers auto-interrupt for human correction.
+  - **Interrupt/resume**: An interrupt_event (threading.Event) can stop
+    execution mid-path. Resume skips relative waypoints.
+
+Waypoint layout:
   Relative section (rows 0..relative_count-1):
     Manipulation waypoints applied RELATIVE to the trigger TCP pose.
-    This allows the same manipulation to work regardless of where
-    the robot is positioned when the skill is triggered.
-
   Absolute section (remaining rows):
     Transfer waypoints in ABSOLUTE base-frame coordinates.
-    Used to move the component to a fixed destination.
-
-After the final waypoint, the gripper opens (part of the CSV) to release.
-
-Interrupt support:
-  Uses asynchronous moveL so the robot can be stopped mid-waypoint via
-  speed_stop(). An interrupt_event (threading.Event) is polled at ~50Hz
-  between waypoints and DURING each moveL motion.
 """
 
 import csv
 import threading
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -40,6 +41,13 @@ _ROT_ARRIVED_RAD = 0.02  # ~1.1 deg rotation tolerance
 _POLL_HZ = 50  # polling rate during async moveL
 _MOVE_TIMEOUT_S = 30.0  # max time to wait for a single waypoint
 
+# Blend radius defaults (meters)
+_DEFAULT_BLEND_M = 0.002  # 2mm
+_SENSITIVE_BLEND_M = 0.0001  # 0.1mm for contact approach
+
+# Grasp verification
+_GRASP_FAIL_THRESHOLD = 200  # if actual_255 > this, grasp failed
+
 
 @dataclass
 class SkillWaypoint:
@@ -48,12 +56,14 @@ class SkillWaypoint:
     joints: np.ndarray  # (6,) joint angles
     tcp_pose: np.ndarray  # (6,) [x,y,z,rx,ry,rz]
     gripper_pos: int  # 0-255
+    is_verification: bool = False  # True for grasp verification WP
 
 
 def load_skill_csv(csv_path: str) -> List[SkillWaypoint]:
     """Load waypoints from a skill CSV file.
 
     Expected columns: timestamp, j0-j5, tcp_x-tcp_rz, gripper_pos, skill_id, image_file
+    Verification waypoints have image_file == "verification_wp".
     """
     waypoints = []
     with open(csv_path, "r") as f:
@@ -65,18 +75,97 @@ def load_skill_csv(csv_path: str) -> List[SkillWaypoint]:
             joints = np.array([float(row[i]) for i in range(1, 7)])
             tcp = np.array([float(row[i]) for i in range(7, 13)])
             gripper = int(float(row[13]))
+            is_verif = len(row) > 15 and row[15].strip() == "verification_wp"
             waypoints.append(
-                SkillWaypoint(joints=joints, tcp_pose=tcp, gripper_pos=gripper)
+                SkillWaypoint(
+                    joints=joints,
+                    tcp_pose=tcp,
+                    gripper_pos=gripper,
+                    is_verification=is_verif,
+                )
             )
     return waypoints
 
 
-class CSVSkillExecutor:
-    """Execute skills from CSV files with relative/absolute waypoint handling.
+@dataclass
+class GripperSegment:
+    """A group of consecutive waypoints with the same gripper value."""
 
-    Uses asynchronous moveL for responsive interrupt support. Each moveL
-    returns immediately and the executor polls TCP position until the
-    robot arrives or an interrupt is detected.
+    start_idx: int  # index in full waypoint list
+    end_idx: int  # inclusive
+    gripper_pos: int
+    waypoints: List[SkillWaypoint] = field(default_factory=list)
+    has_verification: bool = False  # True if any WP is a verification WP
+
+
+def _segment_by_gripper(waypoints: List[SkillWaypoint]) -> List[GripperSegment]:
+    """Split waypoints into segments of consecutive same-gripper values."""
+    if not waypoints:
+        return []
+
+    segments = []
+    seg_start = 0
+    seg_gripper = waypoints[0].gripper_pos
+
+    for i in range(1, len(waypoints)):
+        if waypoints[i].gripper_pos != seg_gripper:
+            seg = GripperSegment(
+                start_idx=seg_start,
+                end_idx=i - 1,
+                gripper_pos=seg_gripper,
+                waypoints=waypoints[seg_start:i],
+                has_verification=any(
+                    wp.is_verification for wp in waypoints[seg_start:i]
+                ),
+            )
+            segments.append(seg)
+            seg_start = i
+            seg_gripper = waypoints[i].gripper_pos
+
+    # Final segment
+    seg = GripperSegment(
+        start_idx=seg_start,
+        end_idx=len(waypoints) - 1,
+        gripper_pos=seg_gripper,
+        waypoints=waypoints[seg_start:],
+        has_verification=any(wp.is_verification for wp in waypoints[seg_start:]),
+    )
+    segments.append(seg)
+    return segments
+
+
+def _compute_blend_radii(
+    segment: GripperSegment,
+    is_first_segment: bool,
+    is_last_segment: bool,
+) -> List[float]:
+    """Compute blend radii for waypoints in a segment.
+
+    Rules:
+      - First/last WP in the segment: blend = 0
+      - Waypoints near gripper change boundaries (±1 of segment edge): blend = 0
+      - First two WPs of the first segment: 0.1mm (sensitive contact approach)
+      - Default: 2mm
+    """
+    n = len(segment.waypoints)
+    radii = [_DEFAULT_BLEND_M] * n
+
+    # First and last WP of each sub-path must have blend = 0
+    radii[0] = 0.0
+    if n > 1:
+        radii[-1] = 0.0
+
+    # Sensitive blend for first segment WPs 0-1 (contact approach)
+    if is_first_segment:
+        for i in range(min(2, n)):
+            if radii[i] != 0.0:
+                radii[i] = _SENSITIVE_BLEND_M
+
+    return radii
+
+
+class CSVSkillExecutor:
+    """Execute skills from CSV files with path blending and grasp verification.
 
     Args:
         skill_csvs: Dict mapping skill name -> CSV file path.
@@ -111,10 +200,12 @@ class CSVSkillExecutor:
             if relative_counts and name in relative_counts:
                 rc = relative_counts[name]
             self._relative_counts[name] = rc
+            n_verif = sum(1 for wp in waypoints if wp.is_verification)
             print(
                 f"[SkillExecutor] Loaded '{name}' from {path}: "
                 f"{len(waypoints)} waypoints "
-                f"({rc} relative + {max(0, len(waypoints) - rc)} absolute)"
+                f"({rc} relative + {max(0, len(waypoints) - rc)} absolute"
+                f", {n_verif} verification)"
             )
 
     @property
@@ -129,21 +220,12 @@ class CSVSkillExecutor:
         target_pose: np.ndarray,
         interrupt_event: Optional[threading.Event] = None,
     ) -> bool:
-        """Async moveL with interrupt polling.
+        """Async moveL to a single waypoint with interrupt polling.
 
-        Sends moveL(asynchronous=True), then polls TCP position at ~50Hz
-        until the robot arrives or interrupt_event is set.
-
-        Args:
-            target_pose: (6,) target [x,y,z,rx,ry,rz].
-            interrupt_event: If set, robot is stopped immediately.
-
-        Returns:
-            True if arrived, False if interrupted.
+        Returns True if arrived, False if interrupted.
         """
         target = np.asarray(target_pose, dtype=np.float64)
 
-        # Start async move
         self._robot_client.move_linear(
             pose=target,
             speed=self._move_speed,
@@ -151,17 +233,14 @@ class CSVSkillExecutor:
             asynchronous=True,
         )
 
-        # Poll until arrived or interrupted
         dt = 1.0 / _POLL_HZ
         t0 = time.time()
         while time.time() - t0 < _MOVE_TIMEOUT_S:
-            # Check interrupt
             if interrupt_event is not None and interrupt_event.is_set():
                 self._robot_client.speed_stop()
                 time.sleep(0.05)
                 return False
 
-            # Check if robot has reached target
             actual = np.asarray(self._robot_client.get_tcp_pose_raw(), dtype=np.float64)
             pos_err = np.linalg.norm(actual[:3] - target[:3])
             rot_err = np.linalg.norm(actual[3:] - target[3:])
@@ -170,12 +249,95 @@ class CSVSkillExecutor:
 
             time.sleep(dt)
 
-        # Timeout — robot may be stuck or protective-stopped
         print(
             f"[SkillExecutor] WARNING: moveL timeout ({_MOVE_TIMEOUT_S}s). "
             f"Robot may not have reached target."
         )
         return True
+
+    def _move_path_and_wait(
+        self,
+        path: list,
+        last_target: np.ndarray,
+        interrupt_event: Optional[threading.Event] = None,
+    ) -> bool:
+        """Execute a blended path and wait for the last waypoint.
+
+        Uses move_linear_path for paths with >1 waypoint, falls back to
+        single moveL for single-waypoint paths.
+
+        Args:
+            path: List of 9-element waypoint lists for moveL(path).
+            last_target: (6,) TCP pose of the last waypoint for arrival check.
+            interrupt_event: If set, stops the robot.
+
+        Returns:
+            True if arrived, False if interrupted.
+        """
+        if len(path) == 1:
+            # Single waypoint — use regular async moveL
+            return self._move_and_wait(last_target, interrupt_event)
+
+        # Multi-waypoint blended path
+        self._robot_client.move_linear_path(path, asynchronous=True)
+
+        target = np.asarray(last_target, dtype=np.float64)
+        dt = 1.0 / _POLL_HZ
+        t0 = time.time()
+        # Longer timeout for multi-waypoint paths
+        timeout = _MOVE_TIMEOUT_S * len(path)
+
+        while time.time() - t0 < timeout:
+            if interrupt_event is not None and interrupt_event.is_set():
+                self._robot_client.speed_stop()
+                time.sleep(0.05)
+                return False
+
+            actual = np.asarray(self._robot_client.get_tcp_pose_raw(), dtype=np.float64)
+            pos_err = np.linalg.norm(actual[:3] - target[:3])
+            rot_err = np.linalg.norm(actual[3:] - target[3:])
+            if pos_err < _POS_ARRIVED_M and rot_err < _ROT_ARRIVED_RAD:
+                return True
+
+            time.sleep(dt)
+
+        print(
+            f"[SkillExecutor] WARNING: path timeout ({timeout:.0f}s). "
+            f"Robot may not have reached target."
+        )
+        return True
+
+    def _set_gripper(self, gripper_pos: int) -> None:
+        """Set gripper to the given 0-255 position."""
+        try:
+            joints = (
+                self._obs_client.get_joint_state()
+                if self._obs_client
+                else self._robot_client.get_joint_state()
+            )
+            joints_cmd = joints.copy()
+            joints_cmd[-1] = gripper_pos / 255.0
+            self._robot_client.command_joint_state(joints_cmd)
+            time.sleep(0.05)
+        except Exception as e:
+            print(f"[SkillExecutor] Gripper command failed: {e}")
+
+    def _check_grasp(self) -> Tuple[bool, int, int]:
+        """Check if the grasp succeeded after verification waypoint.
+
+        Returns:
+            (success, commanded_pos, actual_pos_255)
+        """
+        obs = (
+            self._obs_client.get_observations()
+            if self._obs_client
+            else self._robot_client.get_observations()
+        )
+        actual_01 = obs["gripper_position"][0]
+        actual_255 = int(round(actual_01 * 255))
+        # If gripper reached near-open (> 200), nothing was grasped
+        grasp_ok = actual_255 <= _GRASP_FAIL_THRESHOLD
+        return grasp_ok, 230, actual_255  # 230 is the commanded open value
 
     def execute(
         self,
@@ -183,40 +345,42 @@ class CSVSkillExecutor:
         trigger_tcp_raw: Optional[np.ndarray] = None,
         interrupt_event: Optional[threading.Event] = None,
         resume_absolute_only: bool = False,
-    ) -> bool:
-        """Execute a skill. Blocking — runs waypoints to completion or interruption.
-
-        Uses async moveL internally so the robot can be stopped mid-motion
-        when interrupt_event is set.
+        on_grasp_failed: Optional[Callable[[], None]] = None,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Execute a skill with path blending and grasp verification.
 
         Args:
             skill_name: Name of the skill (e.g. "cpu").
-            trigger_tcp_raw: (6,) current TCP pose at trigger. Required unless
-                resume_absolute_only=True.
-            interrupt_event: If set by another thread, execution stops and the
-                robot halts immediately (mid-waypoint).
-            resume_absolute_only: If True, skip relative waypoints and execute
-                only absolute (base-frame) waypoints.
+            trigger_tcp_raw: (6,) current TCP pose at trigger time.
+            interrupt_event: If set by another thread, execution stops.
+            resume_absolute_only: If True, skip relative waypoints.
+            on_grasp_failed: Callback when grasp verification fails.
+                Called BEFORE the method returns.
 
         Returns:
-            True if all waypoints completed, False if interrupted.
+            (completed, grasp_info) tuple:
+              completed: True if all waypoints done, False if interrupted.
+              grasp_info: Dict with grasp_verified, grasp_commanded, grasp_actual.
+                          Empty dict if no verification waypoint was reached.
         """
         if skill_name not in self._skills:
             print(f"[SkillExecutor] Unknown skill: {skill_name}")
-            return True
+            return True, {}
 
         waypoints = self._skills[skill_name]
         rel_count = self._relative_counts[skill_name]
         total = len(waypoints)
+        grasp_info: Dict[str, Any] = {}
 
         if total == 0:
             print("[SkillExecutor] No waypoints to execute.")
-            return True
+            return True, grasp_info
 
-        # Clear any stale interrupt from before this execution
+        # Clear any stale interrupt
         if interrupt_event is not None:
             interrupt_event.clear()
 
+        # Determine start index and compute transform offset
         T_offset = None
         if resume_absolute_only:
             start_idx = rel_count
@@ -231,53 +395,99 @@ class CSVSkillExecutor:
             T_offset = T_trigger @ np.linalg.inv(T_skill_origin)
             print(
                 f"[SkillExecutor] Executing '{skill_name}': "
-                f"{total} waypoints ({rel_count} relative + {total - rel_count} absolute)"
+                f"{total} waypoints ({rel_count} relative + "
+                f"{total - rel_count} absolute)"
             )
 
-        for i in range(start_idx, total):
-            wp = waypoints[i]
-
-            # Compute target TCP pose
-            if i < rel_count and T_offset is not None:
+        # Compute all target poses
+        active_wps = waypoints[start_idx:]
+        target_poses = []
+        for i, wp in enumerate(active_wps):
+            global_idx = start_idx + i
+            if global_idx < rel_count and T_offset is not None:
                 T_wp = pose6d_to_homogeneous(wp.tcp_pose)
                 T_target = T_offset @ T_wp
-                target_pose = homogeneous_to_pose6d(T_target)
+                target_poses.append(homogeneous_to_pose6d(T_target))
             else:
-                target_pose = wp.tcp_pose.copy()
+                target_poses.append(wp.tcp_pose.copy())
 
-            # Async moveL with interrupt polling
-            try:
-                arrived = self._move_and_wait(target_pose, interrupt_event)
-            except Exception as e:
-                print(f"[SkillExecutor] moveL failed at waypoint {i}: {e}")
-                return False
+        # Segment active waypoints by gripper value
+        segments = _segment_by_gripper(active_wps)
+
+        wp_counter = 0  # tracks progress through active_wps
+        for seg_idx, seg in enumerate(segments):
+            is_first = seg_idx == 0
+            is_last = seg_idx == len(segments) - 1
+
+            # Check interrupt before starting segment
+            if interrupt_event is not None and interrupt_event.is_set():
+                print(f"\n[SkillExecutor] *** INTERRUPTED before segment {seg_idx} ***")
+                return False, grasp_info
+
+            # Set gripper for this segment (before moving)
+            if not is_first:
+                self._set_gripper(seg.gripper_pos)
+                print(f"[SkillExecutor] Gripper -> {seg.gripper_pos}")
+
+            # Build blended path for this segment
+            blend_radii = _compute_blend_radii(seg, is_first, is_last)
+            seg_poses = target_poses[wp_counter : wp_counter + len(seg.waypoints)]
+
+            # Build 9-element path entries
+            path = []
+            for j, pose in enumerate(seg_poses):
+                entry = list(pose) + [
+                    self._move_speed,
+                    self._move_accel,
+                    blend_radii[j],
+                ]
+                path.append(entry)
+
+            # Execute path
+            last_target = seg_poses[-1]
+            arrived = self._move_path_and_wait(path, last_target, interrupt_event)
 
             if not arrived:
+                global_idx = start_idx + wp_counter + len(seg.waypoints) - 1
                 print(
-                    f"\n[SkillExecutor] *** INTERRUPTED during waypoint "
-                    f"{i + 1}/{total} ***"
+                    f"\n[SkillExecutor] *** INTERRUPTED during segment "
+                    f"{seg_idx} (WP {global_idx + 1}/{total}) ***"
                 )
-                return False
+                return False, grasp_info
 
-            # Set gripper position (robot is stopped, safe to use servoJ)
-            try:
-                joints = (
-                    self._obs_client.get_joint_state()
-                    if self._obs_client
-                    else self._robot_client.get_joint_state()
-                )
-                joints_cmd = joints.copy()
-                joints_cmd[-1] = wp.gripper_pos / 255.0  # normalize to 0-1
-                self._robot_client.command_joint_state(joints_cmd)
-                time.sleep(0.05)  # brief settle time for gripper
-            except Exception as e:
-                print(f"[SkillExecutor] Gripper command failed at waypoint {i}: {e}")
+            wp_counter += len(seg.waypoints)
+            print(
+                f"[SkillExecutor] Segment {seg_idx + 1}/{len(segments)} complete "
+                f"({len(seg.waypoints)} WPs, gripper={seg.gripper_pos})"
+            )
 
-            if (i + 1) % 5 == 0 or i == total - 1:
-                print(
-                    f"[SkillExecutor] Waypoint {i + 1}/{total} complete "
-                    f"(gripper={wp.gripper_pos})"
-                )
+            # Grasp verification after verification segment
+            if seg.has_verification:
+                grasp_ok, commanded, actual = self._check_grasp()
+                grasp_info = {
+                    "grasp_verified": grasp_ok,
+                    "grasp_commanded": commanded,
+                    "grasp_actual": actual,
+                }
+                if grasp_ok:
+                    print(
+                        f"[SkillExecutor] Grasp VERIFIED "
+                        f"(actual={actual}, threshold={_GRASP_FAIL_THRESHOLD})"
+                    )
+                else:
+                    print(
+                        f"\n[SkillExecutor] *** GRASP FAILED *** "
+                        f"(actual={actual} > {_GRASP_FAIL_THRESHOLD})"
+                    )
+                    if on_grasp_failed is not None:
+                        on_grasp_failed()
+                    if interrupt_event is not None:
+                        interrupt_event.set()
+                    return False, grasp_info
+
+        # Set final gripper (last segment's value)
+        if segments:
+            self._set_gripper(segments[-1].gripper_pos)
 
         print(f"[SkillExecutor] Skill '{skill_name}' execution complete.")
-        return True
+        return True, grasp_info

@@ -114,10 +114,10 @@ def load_skill_csv(csv_path):
 # SKILL CONFIGURATION
 # ============================================================================
 CPU_SKILL_CSV = "CPU_Skills.csv"
-CPU_RELATIVE_COUNT = 19  # First # waypoints are relative to trigger pose
+CPU_RELATIVE_COUNT = 20  # First 20 waypoints are relative to trigger pose (incl. verification WP)
 
 RAM_SKILL_CSV = "RAM_Skills.csv"
-RAM_RELATIVE_COUNT = 14  # First 17 waypoints (rows 0-16) relative, rows 17-18 absolute
+RAM_RELATIVE_COUNT = 15  # First 15 waypoints are relative to trigger pose (incl. verification WP)
 
 SKILL_MOVE_SPEED = 0.1   # m/s for moveL during skill
 SKILL_MOVE_ACCEL = 0.04   # m/s^2 for moveL during skill

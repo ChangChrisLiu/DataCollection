@@ -55,6 +55,8 @@ class ZMQServerRobot:
                     result = self._robot.get_tcp_pose_raw()
                 elif method == "move_linear":
                     result = self._robot.move_linear(**args)
+                elif method == "move_linear_path":
+                    result = self._robot.move_linear_path(**args)
                 elif method == "set_freedrive_mode":
                     result = self._robot.set_freedrive_mode(**args)
                 else:
@@ -254,6 +256,29 @@ class ZMQClientRobot(Robot):
                 "pose": pose,
                 "speed": speed,
                 "accel": accel,
+                "asynchronous": asynchronous,
+            },
+        }
+        self._socket.send(pickle.dumps(request))
+        pickle.loads(self._socket.recv())
+
+    def move_linear_path(
+        self,
+        path: list,
+        asynchronous: bool = False,
+    ) -> None:
+        """Move TCP through blended waypoints via ZMQ.
+
+        Each element in path is [x,y,z,rx,ry,rz, speed, accel, blend_radius].
+
+        Args:
+            path: List of 9-element waypoint lists.
+            asynchronous: If True, return immediately (non-blocking).
+        """
+        request = {
+            "method": "move_linear_path",
+            "args": {
+                "path": path,
                 "asynchronous": asynchronous,
             },
         }

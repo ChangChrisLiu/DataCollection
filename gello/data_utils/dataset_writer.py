@@ -1,22 +1,29 @@
 # gello/data_utils/dataset_writer.py
-"""Dataset persistence for the dual-dataset pipeline.
+"""Dataset persistence for VLA data collection.
 
-Saves raw episode data as pickle files organized by episode and dataset type.
-Each episode generates two sub-directories:
-  - vla_skill/  (Dataset 1: VLA+Skill with hijacked gripper)
-  - vla_full/   (Dataset 2: Full end-to-end VLA)
+Supports two save modes:
 
-Directory structure:
-    data/dual_dataset/
-      episode_MMDD_HHMMSS/
-        vla_skill/
-          frame_0000_20240101_120000_000000.pkl
-          ...
-          episode_meta.json
-        vla_full/
-          frame_0000_20240101_120000_000000.pkl
-          ...
-          episode_meta.json
+1. **Unified episodes** (new): Single frame stream with phase labels.
+   Used by the unified recording pipeline with EpisodeBuffer.
+
+       data/vla_dataset/
+         episode_MMDD_HHMMSS/
+           frame_0000.pkl
+           frame_0001.pkl
+           ...
+           episode_meta.json
+
+2. **Dual episodes** (legacy): Two sub-directories per episode.
+   Used by the old DualDatasetBuffer pipeline.
+
+       data/dual_dataset/
+         episode_MMDD_HHMMSS/
+           vla_planner/
+             frame_0000_TIMESTAMP.pkl
+             ...
+           vla_executor/
+             frame_0000_TIMESTAMP.pkl
+             ...
 """
 
 import datetime
@@ -102,7 +109,7 @@ class DatasetWriter:
         Args:
             ds_planner: VLA planner frames (teleop + stop signals).
             ds_executor: VLA executor frames (teleop + skill execution).
-            metadata: Episode metadata from DualDatasetBuffer.
+            metadata: Episode metadata dict.
 
         Returns:
             Path to the episode directory.
@@ -121,6 +128,60 @@ class DatasetWriter:
         meta2 = {**(metadata or {}), "type": "vla_executor"}
         self.save_episode(ds_executor, episode_dir, "vla_executor", meta2)
 
+        return episode_dir
+
+    def save_unified_episode(
+        self,
+        frames: List[Dict[str, Any]],
+        phase_segments: List[Dict[str, Any]],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Path:
+        """Save a unified episode (single frame stream with phase labels).
+
+        Args:
+            frames: List of phase-labeled frame dicts from EpisodeBuffer.
+            phase_segments: List of segment dicts from EpisodeBuffer.
+            metadata: Additional metadata (skill_name, grasp info, etc.).
+
+        Returns:
+            Path to the episode directory.
+        """
+        dt_str = datetime.datetime.now().strftime("%m%d_%H%M%S")
+        episode_dir = self.data_dir / f"episode_{dt_str}"
+        episode_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"\n[DatasetWriter] Saving unified episode to {episode_dir}")
+
+        saved_count = 0
+        for i, frame in enumerate(frames):
+            filepath = episode_dir / f"frame_{i:04d}.pkl"
+            try:
+                with open(filepath, "wb") as f:
+                    pickle.dump(frame, f)
+                saved_count += 1
+            except Exception as e:
+                print(f"[DatasetWriter] Failed to save {filepath}: {e}")
+
+        # Build episode_meta.json
+        meta = {
+            **(metadata or {}),
+            "phase_segments": phase_segments,
+            "num_frames": len(frames),
+            "num_frames_saved": saved_count,
+            "fps": 30,
+            "saved_at": datetime.datetime.now().isoformat(),
+        }
+        meta_path = episode_dir / "episode_meta.json"
+        try:
+            with open(meta_path, "w") as f:
+                json.dump(meta, f, indent=2, default=str)
+        except Exception as e:
+            print(f"[DatasetWriter] Failed to save metadata: {e}")
+
+        print(
+            f"[DatasetWriter] Saved {saved_count}/{len(frames)} frames "
+            f"({len(phase_segments)} segments)"
+        )
         return episode_dir
 
     def prompt_quality(self, episode_dir: Path) -> None:

@@ -82,6 +82,26 @@ class URRobot(Robot):
         """
         self.robot.moveL(list(pose), speed, accel, 0, 0, asynchronous)
 
+    def move_linear_path(
+        self,
+        path: list,
+        asynchronous: bool = False,
+    ) -> None:
+        """Move the TCP through a sequence of waypoints with blending.
+
+        Each element in path is a list of 9 values:
+            [x, y, z, rx, ry, rz, speed, accel, blend_radius]
+
+        The UR controller blends between consecutive waypoints using the
+        specified blend radius (meters). First and last waypoints should
+        have blend_radius=0.
+
+        Args:
+            path: List of 9-element waypoints.
+            asynchronous: If True, return immediately (non-blocking).
+        """
+        self.robot.moveL(path, asynchronous)
+
     def get_joint_state(self) -> np.ndarray:
         """Get the current state of the leader robot.
 

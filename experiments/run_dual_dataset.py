@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 # experiments/run_dual_dataset.py
-"""VLA dual-dataset collection pipeline (T4).
+"""VLA unified data collection pipeline (T4).
+
+Records a single frame stream with 4 phase labels:
+  teleop, skill, correction, skill_resume
 
 Workflow per round:
   1. Press Start Recording (left btn 25) -> continuous recording begins
-  2. Teleoperate with HOSAS joystick (data saved at ~30Hz)
-  3. Press Skill button (right btn 15=CPU, 16=RAM) -> 3 stop-signal frames
-     inserted, then skill executes with concurrent recording
-  3b. [Optional] Press Interrupt (left btn 16) -> skill stops, manual teleop
-      resumes. Press skill button again -> resumes absolute waypoints only.
-  4. After skill completes, press Home (left btn 34) -> recording stops,
-     two datasets saved, robot moves home
+  2. Teleoperate with HOSAS joystick (phase: teleop, ~30Hz)
+  3. Press Skill button (right btn 15=CPU, 16=RAM) -> phase: skill
+     Skill executes with concurrent recording.
+     a. If grasp verification fails -> recording paused, phase: correction
+        Provide manual correction with joystick, recording resumes on input.
+     b. Press skill button again -> phase: skill_resume (absolute WPs only)
+  4. After skill completes, press Home (left btn 34) -> save episode + go home
 
-Outputs per round:
-  vla_planner/  - teleop + 3 stop frames (gripper=255)  [high-level planner]
-  vla_executor/ - teleop + skill execution frames        [full executor]
+Output per round:
+  episode_MMDD_HHMMSS/
+    frame_0000.pkl  (phase: teleop)
+    ...
+    frame_NNNN.pkl  (phase: skill_resume)
+    episode_meta.json
 
 Terminal architecture:
   T1: python experiments/launch_nodes.py --robot ur
@@ -25,12 +31,12 @@ Terminal architecture:
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import tyro
 
-from gello.data_utils.dual_dataset_buffer import DualDatasetBuffer
+from gello.data_utils.episode_buffer import EpisodeBuffer
 from gello.data_utils.dataset_writer import DatasetWriter
 from gello.env import RobotEnv
 from gello.skills.csv_skill_executor import CSVSkillExecutor
@@ -53,9 +59,9 @@ class Args:
 
     # Skill configuration
     cpu_skill_csv: str = "CPU_Skills.csv"
-    cpu_relative_count: int = 19
+    cpu_relative_count: int = 20
     ram_skill_csv: str = "RAM_Skills.csv"
-    ram_relative_count: int = 14
+    ram_relative_count: int = 15
     skill_move_speed: float = 0.1
     skill_move_accel: float = 0.04
 
@@ -63,37 +69,38 @@ class Args:
 def build_frame(
     obs: Dict[str, Any],
     camera_clients: Dict[str, ZMQClientCamera],
+    use_obs_cameras: bool = True,
 ) -> Dict[str, Any]:
-    """Build a data frame from robot observations and camera images.
-
-    Gripper position is read from the robot (not the joystick command).
-    """
-    # Joint positions (6 arm joints only)
+    """Build a data frame from robot observations and camera images."""
     joints_full = obs["joint_positions"]
     joints_6 = list(joints_full[:6])
 
-    # TCP pose as [x,y,z,rx,ry,rz] (rotation vector format)
-    ee = obs["ee_pos_quat"]  # [x,y,z,qx,qy,qz,qw]
+    ee = obs["ee_pos_quat"]
     pos = ee[:3]
     rotvec = quat_to_rotvec(ee[3:7])
     tcp_pose = list(np.concatenate([pos, rotvec]))
 
-    # Gripper: from robot observation, convert 0-1 -> 0-255
     gripper_norm = obs["gripper_position"][0]
     gripper_pos = int(round(gripper_norm * 255))
 
+    frame_time = time.time()
     frame = {
-        "timestamp": time.time(),
+        "timestamp": frame_time,
         "joint_positions": joints_6,
         "tcp_pose": tcp_pose,
         "gripper_pos": gripper_pos,
     }
 
-    # Camera images
     for name, cam in camera_clients.items():
-        ts, rgb, depth = cam.read()
-        frame[f"{name}_rgb"] = rgb
-        frame[f"{name}_depth"] = depth
+        if use_obs_cameras and f"{name}_rgb" in obs:
+            frame[f"{name}_rgb"] = obs[f"{name}_rgb"]
+            frame[f"{name}_depth"] = obs[f"{name}_depth"]
+            frame[f"{name}_timestamp"] = obs.get(f"{name}_timestamp", frame_time)
+        else:
+            ts, rgb, depth = cam.read()
+            frame[f"{name}_rgb"] = rgb
+            frame[f"{name}_depth"] = depth
+            frame[f"{name}_timestamp"] = ts
 
     return frame
 
@@ -104,13 +111,13 @@ def build_frame_from_obs_client(
 ) -> Dict[str, Any]:
     """Build a data frame using the read-only obs client (for skill recording)."""
     robot_obs = obs_client.get_observations()
-    return build_frame(robot_obs, camera_clients)
+    return build_frame(robot_obs, camera_clients, use_obs_cameras=False)
 
 
 def record_skill_thread(
     obs_client: ZMQClientRobot,
     camera_clients: Dict[str, ZMQClientCamera],
-    buffer: DualDatasetBuffer,
+    buffer: EpisodeBuffer,
     stop_event: threading.Event,
     hz: int = 30,
 ):
@@ -121,7 +128,7 @@ def record_skill_thread(
         t0 = time.time()
         try:
             frame = build_frame_from_obs_client(obs_client, camera_clients)
-            buffer.record_skill_frame(frame)
+            buffer.record_frame(frame)
             count += 1
         except Exception as e:
             print(f"[RecordThread] Error: {e}")
@@ -135,7 +142,7 @@ def record_skill_thread(
 
 def main(args: Args):
     print("=" * 60)
-    print("  VLA DUAL-DATASET COLLECTION PIPELINE")
+    print("  VLA UNIFIED DATA COLLECTION PIPELINE")
     print("=" * 60)
     print(f"  Robot:    {args.hostname}:{args.robot_port}")
     print(f"  Obs:      {args.hostname}:{args.obs_port}")
@@ -216,20 +223,23 @@ def main(args: Args):
     # ------------------------------------------------------------------
     # 4. Setup buffer + writer
     # ------------------------------------------------------------------
-    buffer = DualDatasetBuffer()
+    buffer = EpisodeBuffer()
     writer = DatasetWriter(data_dir=args.data_dir)
 
     # ------------------------------------------------------------------
-    # 5. Interrupt/resume state
+    # 5. State tracking
     # ------------------------------------------------------------------
     skill_interrupted = False
-    interrupted_skill_name = None
-    # Recording thread handles (kept alive across interrupt/resume)
-    skill_stop_event = None
-    skill_rec_thread = None
+    interrupted_skill_name: Optional[str] = None
+    grasp_failed = False  # True when waiting for correction
+    episode_grasp_info: Dict[str, Any] = {}
+    active_skill_name: Optional[str] = None
+
+    # Recording thread handles
+    skill_stop_event: Optional[threading.Event] = None
+    skill_rec_thread: Optional[threading.Thread] = None
 
     def _stop_recording_thread():
-        """Stop the skill recording thread if it's running."""
         nonlocal skill_stop_event, skill_rec_thread
         if skill_stop_event is not None:
             skill_stop_event.set()
@@ -239,7 +249,6 @@ def main(args: Args):
         skill_rec_thread = None
 
     def _start_recording_thread():
-        """Start a new skill recording thread."""
         nonlocal skill_stop_event, skill_rec_thread
         skill_stop_event = threading.Event()
         skill_rec_thread = threading.Thread(
@@ -248,6 +257,16 @@ def main(args: Args):
             daemon=True,
         )
         skill_rec_thread.start()
+
+    def _on_grasp_failed():
+        """Callback from executor when grasp verification fails."""
+        nonlocal grasp_failed
+        grasp_failed = True
+        # Stop recording thread — recording paused until joystick input
+        _stop_recording_thread()
+        print(
+            "\n[PIPELINE] *** GRASP FAILED — provide correction with joystick ***"
+        )
 
     # ------------------------------------------------------------------
     # 6. Main loop
@@ -267,7 +286,6 @@ def main(args: Args):
     t_start = time.time()
     t_fps = time.time()
 
-    # Track last saved camera timestamps to only record new frames
     last_wrist_ts = 0.0
     last_base_ts = 0.0
 
@@ -287,6 +305,8 @@ def main(args: Args):
                         buffer.start()
                         last_wrist_ts = 0.0
                         last_base_ts = 0.0
+                        episode_grasp_info = {}
+                        active_skill_name = None
                         print("\n[PIPELINE] Recording started!")
                     else:
                         print("[PIPELINE] Already recording.")
@@ -295,22 +315,46 @@ def main(args: Args):
 
                 # --- HOME (stop recording + move home) ---
                 elif signal == "home":
-                    # Clean up interrupted state if active
-                    if skill_interrupted:
-                        _stop_recording_thread()
-                        buffer.finish_skill()
-                        skill_interrupted = False
-                        interrupted_skill_name = None
+                    # Clean up any in-progress state
+                    _stop_recording_thread()
 
-                    if buffer.phase in ("teleop", "skill", "post_skill"):
-                        # Stop and save (get metadata BEFORE export resets)
+                    if buffer.phase != "idle":
+                        # Determine skill outcome
+                        if active_skill_name:
+                            has_correction = any(
+                                f.get("phase") == "correction"
+                                for f in buffer._frames
+                            )
+                            outcome = (
+                                "completed_after_correction"
+                                if has_correction
+                                else "completed"
+                            )
+                        else:
+                            outcome = "no_skill"
+
                         metadata = buffer.get_metadata()
-                        ds_planner, ds_executor = buffer.export()
-                        episode_dir = writer.save_dual_episode(
-                            ds_planner, ds_executor, metadata=metadata
+                        frames, segments = buffer.export()
+
+                        # Build episode metadata
+                        episode_meta = {
+                            **metadata,
+                            "skill_name": active_skill_name or "",
+                            "skill_outcome": outcome,
+                            **episode_grasp_info,
+                        }
+                        episode_dir = writer.save_unified_episode(
+                            frames, segments, metadata=episode_meta
                         )
                         writer.prompt_quality(episode_dir)
                         print("[PIPELINE] Recording saved.")
+
+                    # Reset state
+                    skill_interrupted = False
+                    interrupted_skill_name = None
+                    grasp_failed = False
+                    episode_grasp_info = {}
+                    active_skill_name = None
 
                     # Move home
                     print("[PIPELINE] Moving to home position...")
@@ -326,11 +370,11 @@ def main(args: Args):
                     obs = env.get_obs()
                     continue
 
-                # --- SKILL TRIGGER (e.g. "cpu", "ram") ---
+                # --- SKILL TRIGGER ---
                 elif skill_executor.has_skill(signal):
 
                     # ====================================================
-                    # RESUME after interrupt: skip relative, absolute only
+                    # RESUME after interrupt/grasp failure
                     # ====================================================
                     if skill_interrupted:
                         print(
@@ -338,32 +382,29 @@ def main(args: Args):
                             f"'{interrupted_skill_name}' (absolute waypoints only)"
                         )
 
-                        # Stop robot motion from manual teleop
                         robot_client.speed_stop()
                         time.sleep(0.1)
 
-                        # Start recording thread for the resume phase
+                        # Phase: skill_resume
+                        buffer.set_phase("skill_resume")
                         _start_recording_thread()
 
-                        # Execute absolute waypoints only (blocking)
-                        completed = skill_executor.execute(
+                        completed, grasp_info = skill_executor.execute(
                             interrupted_skill_name,
                             interrupt_event=agent.interrupt_event,
                             resume_absolute_only=True,
                         )
 
                         if completed:
-                            # Skill finished successfully
                             _stop_recording_thread()
-                            buffer.finish_skill()
                             skill_interrupted = False
                             interrupted_skill_name = None
+                            grasp_failed = False
                             print(
                                 "[PIPELINE] Skill resumed and completed. "
                                 "Press Home (btn 34) to save."
                             )
                         else:
-                            # Interrupted again during resume
                             _stop_recording_thread()
                             agent.interrupt_event.clear()
                             print(
@@ -386,13 +427,14 @@ def main(args: Args):
                         continue
 
                     print(f"\n[PIPELINE] Skill '{signal}' triggered!")
+                    active_skill_name = signal
 
                     # Stop robot motion
                     robot_client.speed_stop()
                     time.sleep(0.1)
 
-                    # Insert 3 stop-signal frames (same pose, gripper=255)
-                    buffer.insert_stop_signal(num_repeats=3)
+                    # Phase: skill
+                    buffer.set_phase("skill")
 
                     # Capture trigger TCP for skill transform
                     trigger_tcp = robot_client.get_tcp_pose_raw()
@@ -400,38 +442,46 @@ def main(args: Args):
                     # Start concurrent recording thread
                     _start_recording_thread()
 
-                    # Execute skill (blocking, with interrupt support)
+                    # Execute skill (blocking, with interrupt + grasp verification)
                     print(f"[PIPELINE] Executing skill '{signal}'...")
-                    completed = skill_executor.execute(
+                    completed, grasp_info = skill_executor.execute(
                         signal,
                         trigger_tcp_raw=trigger_tcp,
                         interrupt_event=agent.interrupt_event,
+                        on_grasp_failed=_on_grasp_failed,
                     )
+                    episode_grasp_info = grasp_info
 
                     if completed:
-                        # Normal completion
                         _stop_recording_thread()
-                        buffer.finish_skill()
                         print(
                             f"[PIPELINE] Skill '{signal}' complete. "
                             f"Press Home (btn 34) to save and go home."
                         )
+                    elif grasp_failed:
+                        # Grasp verification failed -> wait for correction
+                        # Recording thread already stopped by _on_grasp_failed
+                        skill_interrupted = True
+                        interrupted_skill_name = signal
+                        agent.interrupt_event.clear()
+                        print(
+                            "[PIPELINE] Waiting for joystick input to begin "
+                            "correction recording..."
+                        )
                     else:
-                        # Interrupted — stop recording, return to manual teleop
+                        # Manual interrupt (left btn 16)
                         _stop_recording_thread()
                         agent.interrupt_event.clear()
                         skill_interrupted = True
                         interrupted_skill_name = signal
+                        buffer.set_phase("correction")
                         print(
                             f"\n[PIPELINE] Skill '{signal}' INTERRUPTED. "
-                            f"Manual teleop active."
+                            f"Manual teleop active (phase: correction)."
                         )
                         print(
                             "[PIPELINE] Correct position manually, then press "
                             "skill button to resume (absolute only)."
-                        )
-                        print(
-                            "[PIPELINE] Or press Home (btn 34) to abandon and save."
                         )
 
                     obs = env.get_obs()
@@ -445,8 +495,21 @@ def main(args: Args):
             # ----------------------------------------------------------
             # Normal velocity control + recording
             # ----------------------------------------------------------
-            # Record teleop frames OR skill frames during interrupt
-            if buffer.phase == "teleop" or skill_interrupted:
+            # Check if joystick has input (for correction detection)
+            has_joystick_input = False
+            if isinstance(action, np.ndarray):
+                vel = action[:6] if len(action) > 6 else action
+                has_joystick_input = np.max(np.abs(vel)) > 0.001
+
+            # Handle grasp failure -> correction phase transition
+            if grasp_failed and has_joystick_input:
+                # Joystick input detected — begin correction recording
+                grasp_failed = False
+                buffer.set_phase("correction")
+                print("\n[PIPELINE] Correction recording started!")
+
+            # Record frames during teleop or correction
+            if buffer.phase in ("teleop", "correction"):
                 current_wrist_ts = obs.get("wrist_timestamp", 0.0)
                 current_base_ts = obs.get("base_timestamp", 0.0)
                 has_new = (
@@ -456,11 +519,7 @@ def main(args: Args):
 
                 if has_new:
                     frame = build_frame(obs, camera_clients)
-                    if skill_interrupted:
-                        # During interrupt: manual corrections go into skill frames
-                        buffer.record_skill_frame(frame)
-                    else:
-                        buffer.record_teleop_frame(frame)
+                    buffer.record_frame(frame)
                     if current_wrist_ts > last_wrist_ts:
                         last_wrist_ts = current_wrist_ts
                     if current_base_ts > last_base_ts:
@@ -477,15 +536,16 @@ def main(args: Args):
             if now - t_fps >= 1.0:
                 hz = loop_count / (now - t_fps)
                 elapsed = now - t_start
-                if skill_interrupted:
-                    phase_label = "INTERRUPTED"
+                if grasp_failed:
+                    phase_label = "GRASP_FAILED"
+                elif skill_interrupted:
+                    phase_label = "CORRECTION"
                 else:
                     phase_label = buffer.phase.upper()
-                n_teleop = buffer.num_teleop_frames
-                n_skill = buffer.num_skill_frames
+                n_frames = buffer.num_frames
                 msg = (
                     f"\r[{phase_label}] T:{elapsed:.0f}s | Hz:{hz:.0f} | "
-                    f"Teleop:{n_teleop} Skill:{n_skill}        "
+                    f"Frames:{n_frames}        "
                 )
                 print(msg, end="", flush=True)
                 loop_count = 0
@@ -502,14 +562,17 @@ def main(args: Args):
 
     _stop_recording_thread()
 
-    if skill_interrupted:
-        buffer.finish_skill()
-
     if buffer.phase != "idle":
         print("[PIPELINE] Saving in-progress recording...")
         metadata = buffer.get_metadata()
-        ds_planner, ds_executor = buffer.export()
-        writer.save_dual_episode(ds_planner, ds_executor, metadata=metadata)
+        frames, segments = buffer.export()
+        episode_meta = {
+            **metadata,
+            "skill_name": active_skill_name or "",
+            "skill_outcome": "incomplete",
+            **episode_grasp_info,
+        }
+        writer.save_unified_episode(frames, segments, metadata=episode_meta)
 
     agent.close()
     print("Pipeline exited.")
