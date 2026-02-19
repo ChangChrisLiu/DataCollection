@@ -10,8 +10,9 @@ Functions:
     load_episode_frames     - Load all .pkl frames sorted by filename
     load_episode_metadata   - Load episode_meta.json
     filter_frames_by_phase  - Keep only frames matching given phases
-    synthesize_stop_signals - Deep-copy last frame N times with gripper=255
-    remove_noop_frames      - Remove frames where robot state hasn't changed
+    synthesize_stop_signals  - Deep-copy last frame N times with gripper=255
+    synthesize_trigger_signals - Amplify last N frames as trigger signal (3x repeat)
+    remove_noop_frames       - Remove frames where robot state hasn't changed
     resize_rgb_pil          - Resize RGB image using PIL LANCZOS (no cv2)
     normalize_gripper       - Convert 0-255 int -> 0.0-1.0 float
     rotvec_to_rpy           - UR rotation vector -> roll-pitch-yaw Euler angles
@@ -167,6 +168,48 @@ def synthesize_stop_signals(
         result.append(stop)
 
     return result
+
+
+def synthesize_trigger_signals(
+    frames: List[Dict[str, Any]],
+    n_tail: int = 15,
+    n_repeats: int = 3,
+) -> List[Dict[str, Any]]:
+    """Preserve and amplify the last n_tail frames as trigger signals.
+
+    Splits frames into main body and tail. Removes no-ops from the body only.
+    Triples the tail frames and marks them with phase="trigger_signal".
+
+    Args:
+        frames: List of phase-filtered frame dicts.
+        n_tail: Number of tail frames to preserve (0.5s at 30Hz = 15).
+        n_repeats: How many times to repeat the tail.
+
+    Returns:
+        cleaned_main + (tail x n_repeats)
+    """
+    if not frames:
+        return []
+
+    if len(frames) <= n_tail:
+        # Not enough frames — use all as tail
+        main, tail = [], list(frames)
+    else:
+        main = frames[:-n_tail]
+        tail = frames[-n_tail:]
+
+    # Remove no-ops from main only (tail preserved as-is)
+    main = remove_noop_frames(main)
+
+    # Repeat the tail, mark as trigger signal
+    trigger_frames = []
+    for _ in range(n_repeats):
+        for f in tail:
+            sig = copy.deepcopy(f)
+            sig["phase"] = "trigger_signal"
+            trigger_frames.append(sig)
+
+    return main + trigger_frames
 
 
 def remove_noop_frames(

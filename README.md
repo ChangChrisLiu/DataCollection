@@ -211,13 +211,22 @@ The left slider controls a speed gain multiplier: fully up = 100% speed, fully d
 
 Each skill CSV contains a verification waypoint that lifts the gripper 5cm after the grasp close. The executor checks the actual gripper position against a per-skill threshold:
 
-| Skill | Grasp Close | Threshold | Pass Condition |
-|-------|-------------|-----------|----------------|
-| CPU | 165 | 155 | actual < 155 (object blocking fingers) |
-| RAM | 225 | 225 | actual < 225 (object blocking fingers) |
+| Skill | Grasp Close | Threshold | Margin | Pass Condition |
+|-------|-------------|-----------|--------|----------------|
+| CPU | 168 | 158 | 10 | actual < 158 (object blocking fingers) |
+| RAM | 229 | 226 | 3 | actual < 226 (object blocking fingers) |
 
-- **Pass**: Object is held. Skill continues normally.
+- **Pass**: Object is held. Skill continues normally with **continuous drop monitoring** enabled (see below).
 - **Fail**: Fingers closed on nothing (actual >= threshold). Recording pauses automatically and the pipeline waits for correction.
+
+### Continuous Drop Detection
+
+After grasp verification succeeds, the executor continuously monitors the actual gripper position during all remaining waypoint motions at 50Hz. If the gripper position reaches or exceeds the grasp threshold, a drop is detected:
+
+- The Robotiq 2F-85 maintains commanded force — with an object gripped, actual position stays below threshold (object resists closure). If the object falls out, the fingers close further past the threshold.
+- On drop detection: robot stops immediately, `on_grasp_failed()` fires, and the pipeline enters correction phase (same flow as grasp failure).
+- Drop monitoring is also re-enabled during `skill_resume` after correction, using the same skill's threshold.
+- The `grasp_info` dict includes `"drop_detected": True` to distinguish drops from manual interrupts.
 
 ### Correction Flow (After Grasp Failure)
 
@@ -277,8 +286,8 @@ The **first segment** (approach, before any gripper change) uses `moveL(path)` w
 
 | Skill | Button | CSV File | Relative Count | Total Waypoints | Grasp Close | Grasp Threshold | Path Mode |
 |-------|--------|----------|----------------|-----------------|-------------|-----------------|-----------|
-| CPU Extraction | Right 34 | `CPU_Skills.csv` | 20 | 23 | 165 | 155 | Path blending (first segment) |
-| RAM Extraction | Right 38 | `RAM_Skills.csv` | 5 | 8 | 229 | 225 | Individual moveL (all segments) |
+| CPU Extraction | Right 34 | `CPU_Skills.csv` | 20 | 23 | 168 | 158 | Path blending (first segment) |
+| RAM Extraction | Right 38 | `RAM_Skills.csv` | 5 | 8 | 229 | 226 | Individual moveL (all segments) |
 
 ---
 
@@ -380,18 +389,25 @@ During conversion, the following processing is applied **in this order** (orderi
 
 Uses TFDS `GeneratorBasedBuilder` following the [kpertsch/rlds_dataset_builder](https://github.com/kpertsch/rlds_dataset_builder) template. Three builder modules in `scripts/`:
 
-| Builder | Directory | Phase Filter | Stop Signal |
-|---------|-----------|-------------|-------------|
-| `ur5e_vla_e2e` | `scripts/ur5e_vla_e2e/` | all phases | no |
-| `ur5e_vla_planner` | `scripts/ur5e_vla_planner/` | teleop | yes (3 frames) |
-| `ur5e_vla_correction` | `scripts/ur5e_vla_correction/` | correction | yes (3 frames) |
+| Builder | Directory | Phase Filter | Stop Signal | Trigger Amp |
+|---------|-----------|-------------|-------------|-------------|
+| `ur5e_vla_e2e` | `scripts/ur5e_vla_e2e/` | all phases | no | no |
+| `ur5e_vla_planner` | `scripts/ur5e_vla_planner/` | teleop | yes (3 frames) | yes (tail x3) |
+| `ur5e_vla_correction` | `scripts/ur5e_vla_correction/` | correction | yes (3 frames) | yes (tail x3) |
 
 All three inherit from `scripts/rlds_builder_base.py` which defines the shared RLDS schema.
 
-**RLDS Schema:**
+**E2E target notes:**
+- Includes all 4 phases as a single continuous trajectory (no phase boundary markers)
+- Actions (delta joints) are smooth across phase boundaries because the robot state is physically continuous
+- No-op frames removed globally (unlike planner/correction which preserve the tail)
+- Intended for training a policy that learns the entire task autonomously — the model must learn from visual context when to transition between approach, grasp, and transfer behaviors
+- Episodes that included correction (grasp failed then recovered) are labeled `success=True` if eventually completed — the planner target trains on the initial (potentially bad) approach from these episodes
+
+**RLDS Schema** (image size matches `--image-size`, default 256):
 ```
-observation.image:          (256, 256, 3) uint8   Base camera RGB (JPEG)
-observation.wrist_image:    (256, 256, 3) uint8   Wrist camera RGB (JPEG)
+observation.image:          (N, N, 3)     uint8    Base camera RGB (JPEG)
+observation.wrist_image:    (N, N, 3)     uint8    Wrist camera RGB (JPEG)
 observation.state:          (8,)          float32  [q0-q5, 0.0, gripper_0to1]
 action:                     (6,)          float32  Delta joint positions [dq0-dq5]
 action_gripper:             (1,)          float32  Gripper position 0-1

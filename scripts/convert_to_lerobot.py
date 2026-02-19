@@ -44,6 +44,7 @@ from conversion_utils import (
     print_alignment_report,
     remove_noop_frames,
     synthesize_stop_signals,
+    synthesize_trigger_signals,
     validate_episode_alignment,
 )
 
@@ -53,16 +54,19 @@ TARGETS = {
     "e2e": {
         "phases": {"teleop", "skill", "correction", "skill_resume"},
         "stop_signal": False,
+        "amplify_trigger": False,
         "default_repo": "ChangChrisLiu/ur5e_e2e",
     },
     "planner": {
         "phases": {"teleop"},
         "stop_signal": True,
+        "amplify_trigger": True,
         "default_repo": "ChangChrisLiu/ur5e_planner",
     },
     "correction": {
         "phases": {"correction"},
         "stop_signal": True,
+        "amplify_trigger": True,
         "default_repo": "ChangChrisLiu/ur5e_correction",
     },
 }
@@ -142,7 +146,11 @@ def convert_episode_frames(
         state = np.concatenate([joints, [gripper]])
 
         # Action: absolute next-step joint positions + next gripper
-        if i < n - 1:
+        phase = frame.get("phase", "")
+        if phase in ("trigger_signal", "stop_signal"):
+            # Trigger/stop: same position + gripper=1.0
+            action = np.concatenate([joints, [np.float32(1.0)]])
+        elif i < n - 1:
             next_frame = frames[i + 1]
             next_joints = np.array(
                 next_frame["joint_positions"][:6], dtype=np.float32
@@ -153,7 +161,7 @@ def convert_episode_frames(
             # Last frame: repeat current (zero delta)
             action = np.concatenate([joints, [gripper]])
 
-        # Images at original resolution (720x1280)
+        # Images already resized to 256x256 during data collection
         base_rgb = frame.get("base_rgb")
         wrist_rgb = frame.get("wrist_rgb")
         if base_rgb is None:
@@ -262,6 +270,7 @@ def main():
     print(f"Target:       {args.target}")
     print(f"Phase filter: {target_cfg['phases']}")
     print(f"Stop signal:  {target_cfg['stop_signal']}")
+    print(f"Trigger amp:  {target_cfg['amplify_trigger']}")
     print(f"Repo ID:      {repo_id}")
     print(f"FPS:          {args.fps}")
     print(f"Task:         {args.task}")
@@ -316,8 +325,11 @@ def main():
             skipped += 1
             continue
 
-        # Remove no-op frames
-        if not args.keep_noops:
+        # Remove no-op frames / trigger signal amplification
+        if target_cfg["amplify_trigger"] and not args.keep_noops:
+            # Handles no-op removal internally (main only, preserves tail)
+            frames = synthesize_trigger_signals(frames, n_tail=15, n_repeats=3)
+        elif not args.keep_noops:
             frames = remove_noop_frames(frames)
 
         # Append stop signals

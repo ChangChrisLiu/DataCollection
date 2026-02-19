@@ -16,3 +16,4 @@ class Ur5eVlaPlanner(Ur5eVlaBuilderBase):
 
     PHASE_FILTER = {"teleop"}
     APPEND_STOP_SIGNAL = True
+    AMPLIFY_TRIGGER = True

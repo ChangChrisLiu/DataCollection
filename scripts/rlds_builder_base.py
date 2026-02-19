@@ -36,6 +36,7 @@ from conversion_utils import (
     resize_rgb_pil,
     rotvec_to_rpy,
     synthesize_stop_signals,
+    synthesize_trigger_signals,
 )
 
 
@@ -53,6 +54,7 @@ class Ur5eVlaBuilderBase(tfds.core.GeneratorBasedBuilder):
     # Override in subclasses
     PHASE_FILTER: Set[str] = set()
     APPEND_STOP_SIGNAL: bool = False
+    AMPLIFY_TRIGGER: bool = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -69,18 +71,19 @@ class Ur5eVlaBuilderBase(tfds.core.GeneratorBasedBuilder):
         return self._embed
 
     def _info(self) -> tfds.core.DatasetInfo:
+        image_size = int(os.environ.get("UR5E_IMAGE_SIZE", "256"))
         return self.dataset_info_from_configs(
             features=tfds.features.FeaturesDict({
                 "steps": tfds.features.Dataset({
                     "observation": tfds.features.FeaturesDict({
                         "image": tfds.features.Image(
-                            shape=(256, 256, 3),
+                            shape=(image_size, image_size, 3),
                             dtype=np.uint8,
                             encoding_format="jpeg",
                             doc="Base camera RGB (OAK-D Pro).",
                         ),
                         "wrist_image": tfds.features.Image(
-                            shape=(256, 256, 3),
+                            shape=(image_size, image_size, 3),
                             dtype=np.uint8,
                             encoding_format="jpeg",
                             doc="Wrist camera RGB (RealSense D435i).",
@@ -175,8 +178,12 @@ class Ur5eVlaBuilderBase(tfds.core.GeneratorBasedBuilder):
             if not frames:
                 continue
 
-            # Remove no-op frames
-            frames = remove_noop_frames(frames)
+            # Trigger signal amplification (planner/correction only)
+            if self.AMPLIFY_TRIGGER:
+                # Handles no-op removal internally (main only, preserves tail)
+                frames = synthesize_trigger_signals(frames, n_tail=15, n_repeats=3)
+            else:
+                frames = remove_noop_frames(frames)
 
             # Append stop signals if configured
             if self.APPEND_STOP_SIGNAL:
@@ -204,8 +211,13 @@ class Ur5eVlaBuilderBase(tfds.core.GeneratorBasedBuilder):
                     dtype=np.float32,
                 )
 
-                # Action: delta joints [dq0-dq5]
-                if not is_last:
+                # Action: delta joints [dq0-dq5] + action gripper
+                phase = frame.get("phase", "")
+                if phase in ("trigger_signal", "stop_signal"):
+                    # Trigger/stop: zero movement + gripper=1.0
+                    action = np.zeros(6, dtype=np.float32)
+                    next_gripper = 1.0
+                elif not is_last:
                     next_f = frames[i + 1]
                     next_joints = next_f["joint_positions"][:6]
                     delta = np.array(next_joints, dtype=np.float64) - np.array(

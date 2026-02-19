@@ -190,6 +190,10 @@ class CSVSkillExecutor:
         self._move_accel = move_accel
         self._grasp_thresholds = grasp_thresholds or {}
 
+        # Continuous drop monitoring state
+        self._drop_monitor_active = False
+        self._drop_monitor_threshold = None
+
         # Load all skill CSVs
         self._skills: Dict[str, List[SkillWaypoint]] = {}
         self._relative_counts: Dict[str, int] = {}
@@ -239,6 +243,14 @@ class CSVSkillExecutor:
             if interrupt_event is not None and interrupt_event.is_set():
                 self._robot_client.stop_linear()
                 time.sleep(0.05)
+                return False
+
+            # Continuous gripper monitoring for component drop
+            if self._check_drop():
+                self._robot_client.stop_linear()
+                time.sleep(0.05)
+                if interrupt_event is not None:
+                    interrupt_event.set()
                 return False
 
             actual = np.asarray(self._robot_client.get_tcp_pose_raw(), dtype=np.float64)
@@ -295,6 +307,14 @@ class CSVSkillExecutor:
                 time.sleep(0.05)
                 return False
 
+            # Continuous gripper monitoring for component drop
+            if self._check_drop():
+                self._robot_client.stop_linear()
+                time.sleep(0.05)
+                if interrupt_event is not None:
+                    interrupt_event.set()
+                return False
+
             actual = np.asarray(self._robot_client.get_tcp_pose_raw(), dtype=np.float64)
             pos_err = np.linalg.norm(actual[:3] - target[:3])
             rot_err = np.linalg.norm(actual[3:] - target[3:])
@@ -345,6 +365,17 @@ class CSVSkillExecutor:
         grasp_ok = actual_255 < threshold
         return grasp_ok, threshold, actual_255
 
+    def _check_drop(self) -> bool:
+        """Check if a grasped component has been dropped.
+
+        Returns True if drop detected (actual >= threshold).
+        Only meaningful when _drop_monitor_active is True.
+        """
+        if not self._drop_monitor_active:
+            return False
+        actual = self._robot_client.get_actual_gripper_pos()
+        return actual >= self._drop_monitor_threshold
+
     def execute(
         self,
         skill_name: str,
@@ -394,12 +425,17 @@ class CSVSkillExecutor:
         T_offset = None
         if resume_absolute_only:
             start_idx = rel_count
+            # Re-enable drop monitoring for resumed skills
+            self._drop_monitor_active = True
+            self._drop_monitor_threshold = grasp_threshold
             print(
                 f"[SkillExecutor] RESUMING '{skill_name}' (absolute only): "
                 f"waypoints {rel_count + 1}-{total}"
             )
         else:
             start_idx = 0
+            self._drop_monitor_active = False
+            self._drop_monitor_threshold = None
             T_trigger = pose6d_to_homogeneous(trigger_tcp_raw)
             T_skill_origin = pose6d_to_homogeneous(waypoints[0].tcp_pose)
             T_offset = T_trigger @ np.linalg.inv(T_skill_origin)
@@ -484,6 +520,24 @@ class CSVSkillExecutor:
                 arrived = self._move_path_and_wait(path, last_target, interrupt_event)
 
             if not arrived:
+                if self._drop_monitor_active and self._check_drop():
+                    # Component dropped during motion
+                    actual = self._robot_client.get_actual_gripper_pos()
+                    grasp_info = {
+                        "grasp_verified": False,
+                        "grasp_threshold": grasp_threshold,
+                        "grasp_actual": actual,
+                        "drop_detected": True,
+                    }
+                    print(
+                        f"\n[SkillExecutor] *** COMPONENT DROPPED during segment "
+                        f"{seg_idx} *** (actual={actual} >= {grasp_threshold})"
+                    )
+                    self._drop_monitor_active = False
+                    if on_grasp_failed is not None:
+                        on_grasp_failed()
+                    return False, grasp_info
+
                 global_idx = start_idx + wp_counter + len(seg.waypoints) - 1
                 print(
                     f"\n[SkillExecutor] *** INTERRUPTED during segment "
@@ -510,6 +564,9 @@ class CSVSkillExecutor:
                         f"[SkillExecutor] Grasp VERIFIED "
                         f"(actual={actual}, threshold={threshold})"
                     )
+                    # Enable continuous drop monitoring for remaining segments
+                    self._drop_monitor_active = True
+                    self._drop_monitor_threshold = grasp_threshold
                 else:
                     print(
                         f"\n[SkillExecutor] *** GRASP FAILED *** "
@@ -526,6 +583,7 @@ class CSVSkillExecutor:
         if segments:
             self._set_gripper(segments[-1].gripper_pos)
 
+        self._drop_monitor_active = False
         self._set_gripper_speed(255)
         print(f"[SkillExecutor] Skill '{skill_name}' execution complete.")
         return True, grasp_info

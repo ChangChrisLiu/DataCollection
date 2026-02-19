@@ -16,3 +16,4 @@ class Ur5eVlaCorrection(Ur5eVlaBuilderBase):
 
     PHASE_FILTER = {"correction"}
     APPEND_STOP_SIGNAL = True
+    AMPLIFY_TRIGGER = True
