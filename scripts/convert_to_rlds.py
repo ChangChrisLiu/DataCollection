@@ -2,8 +2,8 @@
 # scripts/convert_to_rlds.py
 """Build RLDS TFRecord datasets for OpenVLA / OpenVLA-OFT.
 
-Wrapper script that sets environment variables and invokes `tfds build`
-for the selected target dataset. Each target is a separate TFDS
+Uses the TFDS Python API directly (no `tfds build` CLI) to avoid
+the apache_beam dependency. Each target is a separate TFDS
 GeneratorBasedBuilder following the kpertsch/rlds_dataset_builder template.
 
 Targets:
@@ -31,23 +31,23 @@ After building:
 """
 
 import argparse
+import importlib
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 TARGETS = {
-    "e2e": "ur5e_vla_e2e",
-    "planner": "ur5e_vla_planner",
-    "correction": "ur5e_vla_correction",
+    "e2e": ("ur5e_vla_e2e", "ur5e_vla_e2e_dataset_builder", "Ur5eVlaE2e"),
+    "planner": ("ur5e_vla_planner", "ur5e_vla_planner_dataset_builder", "Ur5eVlaPlanner"),
+    "correction": ("ur5e_vla_correction", "ur5e_vla_correction_dataset_builder", "Ur5eVlaCorrection"),
 }
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
 
 def build_target(target_key: str, data_path: str, task: str, image_size: int):
-    """Build one TFDS dataset target."""
-    dataset_name = TARGETS[target_key]
+    """Build one TFDS dataset target using the Python API."""
+    dataset_name, module_name, class_name = TARGETS[target_key]
     builder_dir = SCRIPTS_DIR / dataset_name
 
     if not builder_dir.exists():
@@ -61,20 +61,33 @@ def build_target(target_key: str, data_path: str, task: str, image_size: int):
     print(f"  Image size: {image_size}x{image_size}")
     print(f"{'=' * 60}\n")
 
-    env = os.environ.copy()
-    env["UR5E_DATA_PATH"] = str(Path(data_path).resolve())
-    env["UR5E_TASK"] = task
-    env["UR5E_IMAGE_SIZE"] = str(image_size)
+    # Set environment variables for the builder
+    os.environ["UR5E_DATA_PATH"] = str(Path(data_path).resolve())
+    os.environ["UR5E_TASK"] = task
+    os.environ["UR5E_IMAGE_SIZE"] = str(image_size)
 
-    cmd = ["tfds", "build", "--overwrite"]
-    result = subprocess.run(cmd, cwd=str(builder_dir), env=env)
+    # Import the builder module dynamically
+    sys.path.insert(0, str(builder_dir))
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    module = importlib.import_module(module_name)
+    builder_cls = getattr(module, class_name)
 
-    if result.returncode != 0:
-        print(f"ERROR: tfds build failed for {dataset_name}")
-        sys.exit(1)
+    # Build using Python API (avoids tfds CLI + apache_beam dependency)
+    builder = builder_cls()
+    builder.download_and_prepare()
 
-    output_dir = Path.home() / "tensorflow_datasets" / dataset_name
+    output_dir = Path(builder.data_dir)
     print(f"\n  Output: {output_dir}")
+
+    # Quick verification
+    ds = builder.as_dataset(split="train")
+    n_episodes = 0
+    total_steps = 0
+    for traj in ds:
+        n_episodes += 1
+        total_steps += traj["episode_metadata"]["trajectory_length"].numpy()
+    print(f"  Verified: {n_episodes} episodes, {total_steps} total steps")
+
     return output_dir
 
 
@@ -128,12 +141,12 @@ def main():
     print()
     print("To transfer to server:")
     for name, path in outputs:
-        ds_name = TARGETS[name]
-        print(f"  rsync -avz ~/{path.relative_to(Path.home())}/ server:~/tensorflow_datasets/{ds_name}/")
+        ds_name, _, _ = TARGETS[name]
+        print(f"  rsync -avz {path}/ server:~/tensorflow_datasets/{ds_name}/")
     print()
     print("To verify:")
     for name, path in outputs:
-        ds_name = TARGETS[name]
+        ds_name, _, _ = TARGETS[name]
         print(f"  python -c \"import tensorflow_datasets as tfds; b = tfds.builder('{ds_name}'); print(b.info)\"")
 
 

@@ -19,6 +19,7 @@ Hardware Mapping (Thrustmaster SOL-R2 HOSAS):
     Axis 3 (mini-X)     -> TCP rotation Ry
     Axis 4 (mini-Y)     -> TCP rotation Rx
     Axis 5 (twist)      -> TCP rotation Rz
+    Button 25             -> interrupt active skill
     Button 34            -> skill: CPU extraction
     Button 38            -> skill: RAM
     Button 17            -> skill: Connector (reserved)
@@ -47,6 +48,7 @@ L_BTN_REC_START = 25
 L_BTN_HOME = 34
 L_BTN_VERT = 38
 L_BTN_INTERRUPT = 16  # Interrupt skill execution mid-waypoint
+R_BTN_INTERRUPT = 25  # Right-hand interrupt (same as L_BTN_INTERRUPT)
 
 # Right stick skill buttons -> skill name
 R_BTN_SKILL_MAP = {
@@ -282,9 +284,13 @@ class JoystickAgent(Agent):
                     ):
                         signal = "reorient"
 
-                    # --- Interrupt button (left btn 16) ---
+                    # --- Interrupt buttons (left btn 16, right btn 25) ---
                     if self._rising_edge(
                         left_buttons, self._prev_left_btns, L_BTN_INTERRUPT
+                    ):
+                        self.interrupt_event.set()
+                    if self._rising_edge(
+                        right_buttons, self._prev_right_btns, R_BTN_INTERRUPT
                     ):
                         self.interrupt_event.set()
 

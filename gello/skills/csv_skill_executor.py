@@ -442,7 +442,16 @@ class CSVSkillExecutor:
 
             # Set gripper for this segment (before moving)
             gripper_changed = False
-            if not is_first:
+            if is_first:
+                # Command gripper if it differs from current, but keep
+                # gripper_changed=False so path blending is still used.
+                # The gripper settles before motion starts, so no load
+                # change during the blended path.
+                current_grip = self._robot_client.get_actual_gripper_pos()
+                if abs(seg.gripper_pos - current_grip) > 5:
+                    self._set_gripper(seg.gripper_pos)
+                    print(f"[SkillExecutor] Gripper -> {seg.gripper_pos} (initial)")
+            else:
                 self._set_gripper(seg.gripper_pos)
                 gripper_changed = True
                 print(f"[SkillExecutor] Gripper -> {seg.gripper_pos}")

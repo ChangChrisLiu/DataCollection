@@ -60,9 +60,12 @@ class Ur5eVlaBuilderBase(tfds.core.GeneratorBasedBuilder):
 
     def _get_embed(self):
         if self._embed is None:
-            self._embed = hub.load(
-                "https://tfhub.dev/google/universal-sentence-encoder-large/5"
-            )
+            # Force CPU for USE — avoids CUDA PTX errors on unsupported GPUs
+            # (e.g. RTX 5090 compute 12.0 vs TF compiled for <=9.0)
+            with tf.device("/cpu:0"):
+                self._embed = hub.load(
+                    "https://tfhub.dev/google/universal-sentence-encoder-large/5"
+                )
         return self._embed
 
     def _info(self) -> tfds.core.DatasetInfo:
@@ -148,9 +151,10 @@ class Ur5eVlaBuilderBase(tfds.core.GeneratorBasedBuilder):
         task = os.environ.get("UR5E_TASK", "Pick up the component and place it")
         image_size = int(os.environ.get("UR5E_IMAGE_SIZE", "256"))
 
-        # Compute language embedding once
+        # Compute language embedding once (forced to CPU)
         embed_fn = self._get_embed()
-        lang_embedding = embed_fn([task]).numpy()[0].astype(np.float32)
+        with tf.device("/cpu:0"):
+            lang_embedding = embed_fn([task]).numpy()[0].astype(np.float32)
 
         episodes = discover_episodes(data_path)
         if not episodes:

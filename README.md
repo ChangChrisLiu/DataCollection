@@ -157,7 +157,7 @@ Optional arguments:
 | `--cpu-skill-csv` | `CPU_Skills.csv` | Path to CPU extraction skill CSV |
 | `--ram-skill-csv` | `RAM_Skills.csv` | Path to RAM extraction skill CSV |
 | `--cpu-relative-count` | `20` | Number of relative waypoints in CPU skill |
-| `--ram-relative-count` | `15` | Number of relative waypoints in RAM skill |
+| `--ram-relative-count` | `5` | Number of relative waypoints in RAM skill |
 | `--skill-move-speed` | `0.1` | moveL speed during skill (m/s) |
 | `--skill-move-accel` | `0.04` | moveL acceleration during skill (m/s^2) |
 | `--image-size` | `256` | Resize captured images to NxN pixels |
@@ -178,10 +178,11 @@ LEFT STICK                              RIGHT STICK
                                            Mini Y (ax4) -> TCP Rx rotation
 
 LEFT BUTTONS                            RIGHT BUTTONS
-  Btn 25: Start recording                 Btn 34: Trigger CPU skill
-  Btn 34: Home + stop + save              Btn 38: Trigger RAM skill
-  Btn 38: Vertical reorient               Btn 8:  90° CW rotation (fixed)
-  Btn 16: Interrupt active skill          Btn 9:  90° CCW rotation (fixed)
+  Btn 25: Start recording                 Btn 25: Interrupt active skill
+  Btn 34: Home + stop + save              Btn 34: Trigger CPU skill
+  Btn 38: Vertical reorient               Btn 38: Trigger RAM skill
+  Btn 16: Interrupt active skill          Btn 8:  90° CW rotation (fixed)
+                                          Btn 9:  90° CCW rotation (fixed)
 ```
 
 The left slider controls a speed gain multiplier: fully up = 100% speed, fully down = 10% speed. All axes have a 0.05 deadzone and are calibrated at startup.
@@ -230,7 +231,7 @@ Each skill CSV contains a verification waypoint that lifts the gripper 5cm after
 
 ### Manual Interrupt Flow
 
-1. During skill execution, press **Left Btn 16** to interrupt
+1. During skill execution, press **Left Btn 16** or **Right Btn 25** to interrupt
 2. Robot stops immediately, phase transitions to `correction`
 3. Manually correct position with joystick (correction frames recorded)
 4. Press the **same skill button** to resume with absolute waypoints only
@@ -274,10 +275,10 @@ The **first segment** (approach, before any gripper change) uses `moveL(path)` w
 
 ### Current Skills
 
-| Skill | Button | CSV File | Relative Count | Total Waypoints | Grasp Close | Grasp Threshold |
-|-------|--------|----------|----------------|-----------------|-------------|-----------------|
-| CPU Extraction | Right 34 | `CPU_Skills.csv` | 20 | 23 | 165 | 155 |
-| RAM Extraction | Right 38 | `RAM_Skills.csv` | 15 | 19 | 225 | 225 |
+| Skill | Button | CSV File | Relative Count | Total Waypoints | Grasp Close | Grasp Threshold | Path Mode |
+|-------|--------|----------|----------------|-----------------|-------------|-----------------|-----------|
+| CPU Extraction | Right 34 | `CPU_Skills.csv` | 20 | 23 | 165 | 155 | Path blending (first segment) |
+| RAM Extraction | Right 38 | `RAM_Skills.csv` | 5 | 8 | 229 | 225 | Individual moveL (all segments) |
 
 ---
 
@@ -365,12 +366,15 @@ Raw `.pkl` episodes are converted to model-specific formats locally, then transf
               └── HuggingFace Hub: ChangChrisLiu/ur5e_<target>
 ```
 
-During conversion, the following processing is applied:
+During conversion, the following processing is applied **in this order** (ordering matters):
+
 1. **Phase filtering** — select frames by phase label(s)
-2. **Stop signal synthesis** — 3 copies of last frame with gripper=255
-3. **No-op frame removal** — drop frames where joints haven't changed (threshold: 1e-4 rad)
+2. **No-op frame removal** — drop frames where joints haven't changed (threshold: 1e-4 rad)
+3. **Stop signal synthesis** — 3 copies of last frame with gripper=255 (planner/correction only)
 4. **Delta joint computation** — for RLDS action format
 5. **Image resizing** — 256x256 for RLDS (configurable)
+
+> **Important:** No-op removal (step 2) must happen **before** stop signal synthesis (step 3). Stop signals duplicate the last frame's joint positions, so they would be incorrectly removed as no-ops if the order were reversed.
 
 ### RLDS Conversion (OpenVLA / OpenVLA-OFT)
 
@@ -467,12 +471,135 @@ Options:
 - `--keep-noops` — disable no-op frame removal
 - `--push` — push to HuggingFace Hub after conversion
 
-### Dataset Registration (OpenVLA / OpenVLA-OFT)
+### Dataset Registration (OpenVLA / OpenVLA-OFT Fine-Tuning)
 
-The three RLDS datasets are registered in both `/home/chris/Sibo/openvla/` and `/home/chris/Sibo/openvla-oft/`:
+To fine-tune OpenVLA or OpenVLA-OFT on your RLDS datasets, you must register them in the training codebase. Two files need modification in the OpenVLA/OFT repository:
 
-- **`prismatic/vla/datasets/rlds/oxe/configs.py`** — dataset configurations (JOINT state encoding, JOINT_POS action encoding, image keys)
-- **`prismatic/vla/datasets/rlds/oxe/transforms.py`** — reuses `ur5e_disassembly_dataset_transform` (takes 6D delta joints + appends inverted gripper from state → 7D action)
+#### Step 1: Register Dataset Configuration
+
+**File:** `prismatic/vla/datasets/rlds/oxe/configs.py`
+
+Add an entry to the `OXE_DATASET_CONFIGS` dictionary for each dataset. All UR5e datasets use the same configuration:
+
+```python
+"ur5e_vla_planner": {
+    "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},
+    "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+    "state_obs_keys": ["state"],
+    "state_encoding": StateEncoding.JOINT,
+    "action_encoding": ActionEncoding.JOINT_POS,
+},
+```
+
+Repeat for `ur5e_vla_e2e` and `ur5e_vla_correction` with the same config block.
+
+| Field | Value | Meaning |
+|-------|-------|---------|
+| `image_obs_keys.primary` | `"image"` | Maps to `observation.image` in RLDS (base camera) |
+| `image_obs_keys.wrist` | `"wrist_image"` | Maps to `observation.wrist_image` in RLDS (wrist camera) |
+| `state_encoding` | `StateEncoding.JOINT` | State is 8D joint-space: `[q0-q5, 0.0, gripper]` |
+| `action_encoding` | `ActionEncoding.JOINT_POS` | Action is 6D delta joints (pre-transform) |
+
+#### Step 2: Register Dataset Transform
+
+**File:** `prismatic/vla/datasets/rlds/oxe/transforms.py`
+
+All UR5e datasets reuse the same transform function. Add entries to the `OXE_STANDARDIZATION_TRANSFORMS` dictionary:
+
+```python
+"ur5e_vla_e2e": ur5e_disassembly_dataset_transform,
+"ur5e_vla_planner": ur5e_disassembly_dataset_transform,
+"ur5e_vla_correction": ur5e_disassembly_dataset_transform,
+```
+
+The transform function is already defined in the file:
+
+```python
+def ur5e_disassembly_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    # Extract gripper from observation state (last element)
+    gripper_action = trajectory["observation"]["state"][:, -1:]
+    # Invert: raw 0=open,1=close -> OpenVLA 1=open,0=close
+    gripper_action = invert_gripper_actions(tf.clip_by_value(gripper_action, 0, 1))
+    # Combine: 6D delta joints + 1D inverted gripper = 7D action
+    trajectory["action"] = tf.concat(
+        (trajectory["action"][:, :6], gripper_action), axis=-1,
+    )
+    return trajectory
+```
+
+This takes the 6D delta joint action from RLDS, reads the gripper position from the observation state, inverts it (OpenVLA convention: 1=open, 0=closed), and produces the final 7D action vector.
+
+#### Step 3: Place TFRecord Files
+
+The RLDS TFRecord files must be accessible at `~/tensorflow_datasets/<dataset_name>/1.0.0/` on the training machine:
+
+```bash
+# On the collection machine (local)
+python scripts/convert_to_rlds.py --target all --data-path data/vla_dataset --task "Pick up the CPU"
+
+# Transfer to training server
+rsync -avz ~/tensorflow_datasets/ur5e_vla_planner/ server:~/tensorflow_datasets/ur5e_vla_planner/
+rsync -avz ~/tensorflow_datasets/ur5e_vla_e2e/ server:~/tensorflow_datasets/ur5e_vla_e2e/
+rsync -avz ~/tensorflow_datasets/ur5e_vla_correction/ server:~/tensorflow_datasets/ur5e_vla_correction/
+```
+
+#### Step 4: Launch Fine-Tuning
+
+Reference the dataset by name in the training command:
+
+```bash
+# OpenVLA fine-tuning (example)
+torchrun --nproc-per-node 1 vla-scripts/finetune.py \
+    --vla_path "openvla/openvla-7b" \
+    --data_root_dir ~/tensorflow_datasets \
+    --dataset_name ur5e_vla_planner \
+    --run_root_dir runs/ \
+    --adapter_tmp_dir adapters/ \
+    --lora_rank 32 \
+    --batch_size 16 \
+    --grad_accumulation_steps 1 \
+    --learning_rate 5e-4 \
+    --image_aug True \
+    --wandb_project "ur5e-planner" \
+    --wandb_entity your-entity \
+    --save_steps 2500
+```
+
+> **Note:** These two files (`configs.py` and `transforms.py`) are the **only** modifications needed in the OpenVLA/OFT codebase. No other files require changes. The dataset name you register must exactly match the TFDS builder name (e.g., `ur5e_vla_planner`).
+
+#### Currently Registered Datasets
+
+Both `Sibo/openvla/` and `Sibo/openvla-oft/` have these datasets already registered:
+
+| Dataset Name | Description | Registered In |
+|-------------|-------------|---------------|
+| `ur5e_vla_e2e` | Full trajectory (all phases) | Both repos |
+| `ur5e_vla_planner` | Teleop approach + stop signal | Both repos |
+| `ur5e_vla_correction` | Recovery after grasp failure + stop signal | Both repos |
+
+### Dataset Registration (LeRobot / OpenPI Fine-Tuning)
+
+LeRobot datasets don't need code registration. The conversion script creates a self-contained dataset that is referenced by its HuggingFace repo ID:
+
+```bash
+# Convert and push to Hub
+python scripts/convert_to_lerobot.py \
+    --target planner \
+    --data-dir data/vla_dataset \
+    --repo-id ChangChrisLiu/ur5e_planner \
+    --task "Pick up the CPU" \
+    --push-to-hub
+
+# Or keep local only
+python scripts/convert_to_lerobot.py \
+    --target planner \
+    --data-dir data/vla_dataset \
+    --repo-id ChangChrisLiu/ur5e_planner \
+    --task "Pick up the CPU" \
+    --root /path/to/local/dataset
+```
+
+For OpenPI fine-tuning, reference the dataset by repo ID in the training config. OpenPI's `DeltaActions` transform automatically converts the absolute next-step actions to delta format during training.
 
 ---
 
@@ -490,6 +617,7 @@ Features:
 - Direct RTDE control at 200Hz (no server processes needed)
 - Full HOSAS mapping with calibration
 - Skill execution with interrupt/resume (Right Btn 34=CPU, Right Btn 38=RAM)
+- Interrupt via Left Btn 16 or Right Btn 25
 - CSV waypoint recording
 - Camera preview (optional, RealSense only)
 
@@ -542,7 +670,7 @@ Features:
 │   └── camera_settings.json          # Saved camera parameters
 ├── joysticktst.py                    # Standalone HOSAS test (direct RTDE, 200Hz)
 ├── CPU_Skills.csv                    # CPU extraction skill (20 rel + 3 abs)
-├── RAM_Skills.csv                    # RAM extraction skill (15 rel + 4 abs)
+├── RAM_Skills.csv                    # RAM extraction skill (5 rel + 3 abs)
 └── ros2/                             # ROS 2 packages for Franka FR3
 ```
 
@@ -558,6 +686,34 @@ The control loop and recording are decoupled for fluent joystick control, matchi
 | **Recording (teleop)** | **30Hz** | Camera-frame gated (only records on new timestamp) |
 | **Skill recording thread** | **30Hz** | Concurrent recording during skill execution |
 | Robot observations | 200Hz | Polled at control rate; cameras return cached frames |
+
+## Known Issues / Environment Notes
+
+### TF CUDA Compatibility (RTX 5090)
+
+The RTX 5090 (compute capability 12.0) is not supported by the CUDA kernels shipped with current TensorFlow releases. When building RLDS datasets, the Universal Sentence Encoder (USE) will fail with `CUDA_ERROR_INVALID_PTX` if TF tries to use the GPU.
+
+**Workaround:** Force CPU-only mode for RLDS conversion:
+
+```bash
+CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
+    --target all --data-path data/vla_dataset --task "Pick up the CPU"
+```
+
+This only affects the conversion step (USE embedding is a one-time operation per build). Training on the server uses a different TF/CUDA version that supports the training GPU.
+
+### TorchCodec / FFmpeg (LeRobot read-back)
+
+LeRobot v3 uses `torchcodec` for video decoding. If `libtorchcodec` fails to load (FFmpeg version mismatch), dataset **creation** still works (uses SVT-AV1 encoder directly), but **reading back** the dataset locally will fail. This does not affect training on a properly configured server.
+
+**Fix:** Install a compatible FFmpeg version (4, 5, 6, or 7) and matching torchcodec:
+
+```bash
+conda install -c conda-forge ffmpeg=6
+pip install torchcodec
+```
+
+---
 
 ## Citation
 

@@ -64,6 +64,7 @@ L_BTN_INTERRUPT = 16
 
 # Discrete Buttons (Right)
 R_BTN_REC_STOP = 25
+R_BTN_INTERRUPT = 25
 R_BTN_UNDO = 4
 R_BTN_SKILLS = [34, 38]
 R_BTN_ROTATE_CW = 8  # 90° rotation, same dir as axis 5 at +1
@@ -119,7 +120,7 @@ CPU_SKILL_CSV = "CPU_Skills.csv"
 CPU_RELATIVE_COUNT = 20  # First 20 waypoints are relative to trigger pose (incl. verification WP)
 
 RAM_SKILL_CSV = "RAM_Skills.csv"
-RAM_RELATIVE_COUNT = 15  # First 15 waypoints are relative to trigger pose (incl. verification WP)
+RAM_RELATIVE_COUNT = 5  # First 5 waypoints are relative to trigger pose (incl. verification WP)
 
 SKILL_MOVE_SPEED = 0.1   # m/s for moveL during skill
 SKILL_MOVE_ACCEL = 0.04   # m/s^2 for moveL during skill
@@ -489,13 +490,14 @@ class DualTeleopController:
         return MIN_GAIN + ((1.0 - val) * (1.0 - MIN_GAIN))
 
     def _check_interrupt(self):
-        """Check if skill interrupt button (left stick btn 16) was pressed."""
+        """Check if skill interrupt button was pressed (left btn 16 or right btn 25)."""
         pygame.event.pump()
         for ev in pygame.event.get():
-            if (ev.type == pygame.JOYBUTTONDOWN
-                    and ev.instance_id == self.left_id
-                    and ev.button == L_BTN_INTERRUPT):
-                return True
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.instance_id == self.left_id and ev.button == L_BTN_INTERRUPT:
+                    return True
+                if ev.instance_id == self.right_id and ev.button == R_BTN_INTERRUPT:
+                    return True
         return False
 
     def execute_skill_reorient(self):
@@ -639,7 +641,8 @@ class DualTeleopController:
         print("  Btn 24/25  -> Save waypoint     Btn 4      -> Undo waypoint")
         print("  Btn 35     -> Home              Btn 34     -> CPU skill")
         print("  Btn 17     -> Interrupt skill    Btn 38     -> RAM skill")
-        print("  Btn 39     -> Vertical orient    Btn 8      -> 90° CW rotate")
+        print("  Btn 39     -> Vertical orient    Btn 25     -> Interrupt skill")
+        print("                                   Btn 8      -> 90° CW rotate")
         print("                                   Btn 9      -> 90° CCW rotate")
         print("--------------------\n")
         try:

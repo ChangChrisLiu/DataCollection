@@ -65,7 +65,7 @@ class Args:
     cpu_skill_csv: str = "CPU_Skills.csv"
     cpu_relative_count: int = 20
     ram_skill_csv: str = "RAM_Skills.csv"
-    ram_relative_count: int = 15
+    ram_relative_count: int = 5
     skill_move_speed: float = 0.1
     skill_move_accel: float = 0.04
 
@@ -341,6 +341,7 @@ def main(args: Args):
     print("  Left Btn 16:  Interrupt skill (manual correction)")
     print("  Left Btn 34:  Home + stop recording + save")
     print("  Left Btn 38:  Vertical reorient")
+    print("  Right Btn 25: Interrupt skill (right-hand)")
     print("  Right Btn 34: Trigger CPU skill (or resume after interrupt)")
     print("  Right Btn 38: Trigger RAM skill (or resume after interrupt)")
     print("  Ctrl+C:       Exit")
