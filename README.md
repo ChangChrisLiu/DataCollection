@@ -715,17 +715,632 @@ pip install torchcodec
 
 ---
 
-## Citation
+## Fine-Tuning Guide
 
-Built on the GELLO framework:
+This section covers the complete fine-tuning pipeline for all three model architectures. The workflow is:
 
-```bibtex
-@misc{wu2023gello,
-    title={GELLO: A General, Low-Cost, and Intuitive Teleoperation Framework for Robot Manipulators},
-    author={Philipp Wu and Yide Shentu and Zhongke Yi and Xingyu Lin and Pieter Abbeel},
-    year={2023},
-}
 ```
+Collect data → Convert to format → Transfer to training machine → Register dataset → Fine-tune → Deploy
+```
+
+### Overview of Architectures
+
+| Architecture | Framework | Format | Action Space | Fine-Tuning | VRAM (LoRA) |
+|-------------|-----------|--------|--------------|-------------|-------------|
+| [OpenVLA](https://github.com/openvla/openvla) | PyTorch | RLDS TFRecord | 7D tokenized | LoRA (PEFT) | 48 GB+ |
+| [OpenVLA-OFT](https://github.com/moojink/openvla-oft) | PyTorch | RLDS TFRecord | 7D continuous (L1/diffusion) | LoRA + action head | 48 GB+ |
+| [OpenPI](https://github.com/Physical-Intelligence/openpi) | JAX (Flax) | LeRobot v3 | 7D flow matching | LoRA (JAX native) | 22.5 GB+ |
+
+---
+
+### A. OpenVLA Fine-Tuning (Server)
+
+OpenVLA uses LoRA fine-tuning via HuggingFace PEFT on a 7B parameter VLA model. Actions are tokenized into discrete bins.
+
+#### Prerequisites
+
+```bash
+# On the training server
+cd /path/to/openvla
+pip install -e .
+pip install peft==0.11.1
+```
+
+#### A.1 Transfer RLDS Data
+
+```bash
+# On the collection machine (local)
+python scripts/convert_to_rlds.py \
+    --target planner \
+    --data-path data/vla_dataset \
+    --task "Pick up the CPU and place it in the socket"
+
+# Transfer to training server
+rsync -avz ~/tensorflow_datasets/ur5e_vla_planner/ server:~/tensorflow_datasets/ur5e_vla_planner/
+rsync -avz ~/tensorflow_datasets/ur5e_vla_e2e/ server:~/tensorflow_datasets/ur5e_vla_e2e/
+rsync -avz ~/tensorflow_datasets/ur5e_vla_correction/ server:~/tensorflow_datasets/ur5e_vla_correction/
+```
+
+#### A.2 Register Dataset (Already Done)
+
+Both `Sibo/openvla/` and `Sibo/openvla-oft/` have the datasets pre-registered in `configs.py` and `transforms.py`. See [Dataset Registration (OpenVLA / OpenVLA-OFT Fine-Tuning)](#dataset-registration-openvla--openvla-oft-fine-tuning) for details. If you move to a new server installation, copy the config and transform entries.
+
+#### A.3 Fine-Tune
+
+```bash
+# Single GPU (48 GB minimum, batch 12 max)
+torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
+    --vla_path "openvla/openvla-7b" \
+    --data_root_dir ~/tensorflow_datasets \
+    --dataset_name ur5e_vla_planner \
+    --run_root_dir runs/ \
+    --adapter_tmp_dir adapters/ \
+    --lora_rank 32 \
+    --batch_size 12 \
+    --max_steps 200000 \
+    --save_steps 5000 \
+    --learning_rate 5e-4 \
+    --image_aug True \
+    --wandb_project "ur5e-openvla" \
+    --wandb_entity your-entity
+
+# Multi-GPU (K GPUs)
+torchrun --standalone --nnodes 1 --nproc-per-node $K vla-scripts/finetune.py \
+    --vla_path "openvla/openvla-7b" \
+    --data_root_dir ~/tensorflow_datasets \
+    --dataset_name ur5e_vla_planner \
+    --run_root_dir runs/ \
+    --batch_size 16 \
+    --learning_rate 5e-4
+```
+
+**Key Parameters:**
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `--vla_path` | `openvla/openvla-7b` | HuggingFace model ID or local path |
+| `--dataset_name` | - | Must match TFDS builder name exactly |
+| `--data_root_dir` | `datasets/open-x-embodiment` | Directory containing `ur5e_vla_*/1.0.0/` |
+| `--batch_size` | 16 | 12 max on 48 GB, 24 on 80 GB |
+| `--lora_rank` | 32 | Higher = more capacity, more VRAM |
+| `--use_lora` | True | Set False for full fine-tuning (80 GB+ required) |
+| `--image_aug` | True | Recommended for small datasets |
+| `--save_latest_checkpoint_only` | True | Set False to keep all checkpoints |
+
+#### A.4 Inference with Fine-Tuned OpenVLA
+
+```python
+from transformers import AutoModelForVision2Seq, AutoProcessor
+from PIL import Image
+
+# Load fine-tuned model
+processor = AutoProcessor.from_pretrained("runs/ur5e_vla_planner+b16+lr-5e-4/", trust_remote_code=True)
+model = AutoModelForVision2Seq.from_pretrained("runs/ur5e_vla_planner+b16+lr-5e-4/", trust_remote_code=True)
+
+# Predict action
+image = Image.fromarray(base_rgb)
+prompt = "In: What action should the robot take to pick up the CPU?\nOut:"
+inputs = processor(prompt, image).to("cuda")
+action_tokens = model.predict_action(**inputs)
+# action_tokens: (7,) — 6 delta joints + 1 gripper (normalized)
+```
+
+---
+
+### B. OpenVLA-OFT Fine-Tuning (Server)
+
+OpenVLA-OFT adds a **continuous action head** (L1 regression or diffusion) on top of the OpenVLA backbone, producing much smoother actions than the tokenized baseline.
+
+#### B.1 Transfer RLDS Data
+
+Same as OpenVLA — use `rsync` to transfer RLDS TFRecords to the server.
+
+#### B.2 Fine-Tune
+
+```bash
+# L1 regression action head (recommended starting point)
+torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
+    --vla_path "openvla/openvla-7b" \
+    --data_root_dir ~/tensorflow_datasets \
+    --dataset_name ur5e_vla_planner \
+    --run_root_dir runs/ \
+    --use_l1_regression True \
+    --use_diffusion False \
+    --use_lora True \
+    --lora_rank 32 \
+    --batch_size 8 \
+    --max_steps 200000 \
+    --learning_rate 5e-4 \
+    --num_steps_before_decay 100000 \
+    --save_freq 10000 \
+    --image_aug True \
+    --wandb_project "ur5e-openvla-oft" \
+    --wandb_entity your-entity
+
+# Diffusion action head (potentially better for multimodal actions)
+torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
+    --vla_path "openvla/openvla-7b" \
+    --data_root_dir ~/tensorflow_datasets \
+    --dataset_name ur5e_vla_planner \
+    --run_root_dir runs/ \
+    --use_l1_regression False \
+    --use_diffusion True \
+    --num_diffusion_steps_train 50 \
+    --use_lora True \
+    --lora_rank 32 \
+    --batch_size 8 \
+    --max_steps 200000 \
+    --learning_rate 5e-4
+```
+
+**Key OFT-Specific Parameters:**
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `--use_l1_regression` | True | L1 loss continuous action head |
+| `--use_diffusion` | False | DDIM diffusion action head (mutually exclusive with L1) |
+| `--num_diffusion_steps_train` | 50 | Diffusion steps per training iteration |
+| `--use_film` | False | FiLM conditioning for language → vision |
+| `--use_proprio` | False | Include proprioceptive state in input |
+| `--num_steps_before_decay` | 100,000 | Steps before 10x LR decay (MultiStepLR) |
+| `--save_freq` | 10,000 | Checkpoint save interval |
+| `--save_latest_checkpoint_only` | False | Keeps all checkpoints by default |
+| `--resume` | False | Resume from checkpoint |
+
+**OpenVLA vs OpenVLA-OFT Comparison:**
+
+| Feature | OpenVLA | OpenVLA-OFT |
+|---------|---------|------------|
+| Action representation | Tokenized (discrete bins) | Continuous (L1 or diffusion) |
+| Action smoothness | Quantized steps | Smooth continuous |
+| LR schedule | Fixed | MultiStepLR with decay |
+| Default batch size | 16 | 8 |
+| Checkpoint strategy | Latest only | All checkpoints |
+| Additional heads | None | L1/Diffusion/FiLM/Proprio |
+
+---
+
+### C. OpenPI Fine-Tuning (Local Desktop — JAX LoRA)
+
+OpenPI provides pi0/pi0-FAST/pi0.5 base models pre-trained on 10k+ hours of robot data. Fine-tuning uses **JAX with Flax NNX** and supports LoRA for memory-efficient training on consumer GPUs (22.5 GB+).
+
+#### C.1 Setup
+
+```bash
+cd /home/chris/openpi
+
+# Virtual environment is already set up at .venv/
+# Verify JAX sees your GPU
+.venv/bin/python -c "import jax; print(jax.devices())"
+# Expected: [CudaDevice(id=0)]
+```
+
+If starting from scratch on a new machine:
+
+```bash
+git clone --recurse-submodules git@github.com:Physical-Intelligence/openpi.git
+cd openpi
+git submodule update --init --recursive
+
+# Install uv (package manager) if needed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install all dependencies (skip LFS for speed)
+GIT_LFS_SKIP_SMUDGE=1 uv sync
+```
+
+**Requirements:**
+- Python 3.11+
+- JAX 0.5.3+ with CUDA 12 (`jax[cuda12]`)
+- RTX 5090 (compute 12.0) is supported by JAX 0.4.38+ / jaxlib 0.5.3+
+- 22.5 GB+ VRAM for LoRA fine-tuning
+
+#### C.2 Convert Data to LeRobot Format
+
+```bash
+cd /home/chris/DataCollection
+
+# Convert planner dataset (or e2e, correction)
+python scripts/convert_to_lerobot.py \
+    --target planner \
+    --data-dir data/vla_dataset \
+    --repo-id ChangChrisLiu/ur5e_planner \
+    --task "Pick up the CPU and place it in the socket" \
+    --fps 30
+
+# Push to HuggingFace Hub (recommended — OpenPI loads from Hub by default)
+python scripts/convert_to_lerobot.py \
+    --target planner \
+    --data-dir data/vla_dataset \
+    --repo-id ChangChrisLiu/ur5e_planner \
+    --task "Pick up the CPU and place it in the socket" \
+    --fps 30 \
+    --push-to-hub
+```
+
+The dataset is stored at `~/.cache/huggingface/lerobot/ChangChrisLiu/ur5e_planner/`.
+
+#### C.3 Register UR5e Config in OpenPI
+
+Three files need to be added/modified in the OpenPI codebase.
+
+**File 1: Create `src/openpi/policies/ur5e_policy.py`**
+
+This defines how UR5e observations map to the model's input format and how model outputs map back to robot actions.
+
+```python
+"""UR5e policy transforms for OpenPI.
+
+Maps UR5e observations (2 cameras, 6 joints + gripper) to the pi0 model
+input format, and extracts 7D actions from model output.
+"""
+
+import dataclasses
+
+import einops
+import numpy as np
+
+from openpi import transforms
+from openpi.models import model as _model
+
+
+def _parse_image(image) -> np.ndarray:
+    """Convert image to uint8 (H,W,C) — handles LeRobot float32 (C,H,W)."""
+    image = np.asarray(image)
+    if np.issubdtype(image.dtype, np.floating):
+        image = (255 * image).astype(np.uint8)
+    if image.shape[0] == 3:
+        image = einops.rearrange(image, "c h w -> h w c")
+    return image
+
+
+@dataclasses.dataclass(frozen=True)
+class UR5eInputs(transforms.DataTransformFn):
+    """Convert UR5e observations to model input format.
+
+    Input keys (after repack):
+        observation/image:       base camera RGB
+        observation/wrist_image: wrist camera RGB
+        observation/state:       7D [q0-q5, gripper_norm]
+
+    Output keys (model expects):
+        state:       7D state vector
+        image:       dict of named camera images
+        image_mask:  dict of booleans (False = padding slot)
+        actions:     action chunk (training only)
+        prompt:      language instruction
+    """
+
+    model_type: _model.ModelType = _model.ModelType.PI0
+
+    def __call__(self, data: dict) -> dict:
+        base_image = _parse_image(data["observation/image"])
+        wrist_image = _parse_image(data["observation/wrist_image"])
+
+        inputs = {
+            "state": data["observation/state"],
+            "image": {
+                "base_0_rgb": base_image,
+                "left_wrist_0_rgb": wrist_image,
+                # Pad unused right-wrist slot with zeros
+                "right_wrist_0_rgb": np.zeros_like(base_image),
+            },
+            "image_mask": {
+                "base_0_rgb": np.True_,
+                "left_wrist_0_rgb": np.True_,
+                # Mask padding for pi0 only; pi0-FAST treats all slots equally
+                "right_wrist_0_rgb": (
+                    np.True_ if self.model_type == _model.ModelType.PI0_FAST
+                    else np.False_
+                ),
+            },
+        }
+
+        if "actions" in data:
+            inputs["actions"] = data["actions"]
+        if "prompt" in data:
+            inputs["prompt"] = data["prompt"]
+
+        return inputs
+
+
+@dataclasses.dataclass(frozen=True)
+class UR5eOutputs(transforms.DataTransformFn):
+    """Extract 7D actions (6 joints + 1 gripper) from padded model output."""
+
+    def __call__(self, data: dict) -> dict:
+        return {"actions": np.asarray(data["actions"][:, :7])}
+```
+
+**File 2: Add data config to `src/openpi/training/config.py`**
+
+Add the import at the top of the file (with the other policy imports):
+
+```python
+import openpi.policies.ur5e_policy as ur5e_policy
+```
+
+Add the `LeRobotUR5eDataConfig` class (after `LeRobotLiberoDataConfig`):
+
+```python
+@dataclasses.dataclass(frozen=True)
+class LeRobotUR5eDataConfig(DataConfigFactory):
+    """UR5e single-arm robot with 2 cameras (base + wrist).
+
+    Dataset schema (LeRobot v3):
+        observation.images.base_rgb:  (256,256,3) video
+        observation.images.wrist_rgb: (256,256,3) video
+        observation.state:            (7,) float32 [q0-q5, gripper_norm]
+        action:                       (7,) float32 [q0_next..q5_next, gripper_next_norm]
+
+    Actions are absolute next-step joint positions. The DeltaActions transform
+    converts joints to deltas during training; gripper stays absolute.
+    """
+
+    # Default prompt if dataset has no per-episode task field.
+    default_prompt: str | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Repack: map LeRobot dataset keys to the keys UR5eInputs expects.
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "observation.images.base_rgb",
+                        "observation/wrist_image": "observation.images.wrist_rgb",
+                        "observation/state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        # Data transforms: UR5e-specific I/O mapping.
+        data_transforms = _transforms.Group(
+            inputs=[ur5e_policy.UR5eInputs(model_type=model_config.model_type)],
+            outputs=[ur5e_policy.UR5eOutputs()],
+        )
+
+        # Delta action conversion: joints (first 6) → delta, gripper (7th) → absolute.
+        delta_action_mask = _transforms.make_bool_mask(6, -1)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        # Model transforms (tokenization, image resize, padding) — standard for all robots.
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+```
+
+**File 3: Add training configs to `_CONFIGS` list in the same file**
+
+Add these entries to the `_CONFIGS` list:
+
+```python
+#
+# Fine-tuning UR5e configs.
+#
+# LoRA fine-tuning: pi0 (flow matching, 22.5 GB VRAM)
+TrainConfig(
+    name="pi0_ur5e_lora",
+    model=pi0_config.Pi0Config(
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+    ),
+    data=LeRobotUR5eDataConfig(
+        repo_id="ChangChrisLiu/ur5e_planner",
+        assets=AssetsConfig(
+            assets_dir="gs://openpi-assets/checkpoints/pi0_base/assets",
+            asset_id="ur5e",
+        ),
+        base_config=DataConfig(prompt_from_task=True),
+    ),
+    weight_loader=weight_loaders.CheckpointWeightLoader(
+        "gs://openpi-assets/checkpoints/pi0_base/params"
+    ),
+    freeze_filter=pi0_config.Pi0Config(
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+    ).get_freeze_filter(),
+    ema_decay=None,  # Disable EMA for LoRA
+    num_train_steps=30_000,
+),
+# LoRA fine-tuning: pi0-FAST (autoregressive, 22.5 GB VRAM)
+TrainConfig(
+    name="pi0_fast_ur5e_lora",
+    model=pi0_fast.Pi0FASTConfig(
+        action_dim=7,
+        action_horizon=10,
+        max_token_len=180,  # ~180 for single-arm
+        paligemma_variant="gemma_2b_lora",
+    ),
+    data=LeRobotUR5eDataConfig(
+        repo_id="ChangChrisLiu/ur5e_planner",
+        assets=AssetsConfig(
+            assets_dir="gs://openpi-assets/checkpoints/pi0_fast_base/assets",
+            asset_id="ur5e",
+        ),
+        base_config=DataConfig(prompt_from_task=True),
+    ),
+    weight_loader=weight_loaders.CheckpointWeightLoader(
+        "gs://openpi-assets/checkpoints/pi0_fast_base/params"
+    ),
+    freeze_filter=pi0_fast.Pi0FASTConfig(
+        action_dim=7, action_horizon=10, max_token_len=180,
+        paligemma_variant="gemma_2b_lora",
+    ).get_freeze_filter(),
+    ema_decay=None,
+    num_train_steps=30_000,
+),
+```
+
+To train on a different dataset target (e.g., `e2e` or `correction`), either:
+- Create separate configs with different `repo_id` values, or
+- Override at the command line: `--data.repo_id ChangChrisLiu/ur5e_e2e`
+
+#### C.4 Compute Normalization Statistics
+
+OpenPI normalizes states and actions using dataset statistics. You can either compute fresh stats or reuse the pre-trained UR5e stats from the base model.
+
+**Option A: Reuse base model stats (recommended for transfer)**
+
+Already configured via `AssetsConfig(assets_dir="gs://openpi-assets/...", asset_id="ur5e")` in the config above. The base model was pre-trained on UR5e data with the same joint angle conventions.
+
+**Option B: Compute fresh stats**
+
+```bash
+cd /home/chris/openpi
+uv run scripts/compute_norm_stats.py --config-name pi0_ur5e_lora
+```
+
+This saves stats to `assets/pi0_ur5e_lora/ChangChrisLiu/ur5e_planner/`. Remove the `AssetsConfig.assets_dir` override in the config to use local stats instead of pre-trained ones.
+
+**Verify normalization stats are sane:**
+
+Check that no dimension has a near-zero `std` or extremely tight `q01`/`q99` range. Dimensions with tiny variance cause huge normalized values and diverging loss.
+
+#### C.5 Train
+
+```bash
+cd /home/chris/openpi
+
+# LoRA fine-tuning with pi0 (recommended starting point)
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+uv run scripts/train.py pi0_ur5e_lora \
+    --exp-name ur5e_planner_v1 \
+    --overwrite
+
+# LoRA fine-tuning with pi0-FAST
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+uv run scripts/train.py pi0_fast_ur5e_lora \
+    --exp-name ur5e_planner_fast_v1 \
+    --overwrite
+```
+
+**Resume training** (remove `--overwrite`, auto-detects latest checkpoint):
+
+```bash
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+uv run scripts/train.py pi0_ur5e_lora \
+    --exp-name ur5e_planner_v1
+```
+
+**Override hyperparameters from CLI:**
+
+```bash
+uv run scripts/train.py pi0_ur5e_lora \
+    --exp-name ur5e_planner_v1 \
+    --overwrite \
+    --num-train-steps 50000 \
+    --batch-size 4 \
+    --lr-schedule.peak-lr 1e-4
+```
+
+**Key training parameters:**
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `--exp-name` | required | Unique experiment name |
+| `--overwrite` | False | Overwrite existing checkpoint dir |
+| `--num-train-steps` | 30,000 | Total training steps |
+| `--batch-size` | 32 | Reduce to 2-4 for 24 GB GPU |
+| `--save-interval` | 1000 | Checkpoint save interval |
+| `--log-interval` | 100 | W&B logging interval |
+| `--fsdp-devices` | 1 | Set >1 for multi-GPU FSDP |
+
+**Checkpoints saved to:**
+```
+checkpoints/pi0_ur5e_lora/ur5e_planner_v1/<step>/
+├── params/           # Model parameters
+├── config.pkl        # Training config
+├── data_config.pkl   # Dataset metadata
+└── wandb_id.txt      # W&B run ID
+```
+
+**W&B integration:** Training automatically logs to W&B (loss, gradient norm, sample images). Set `WANDB_PROJECT` and `WANDB_ENTITY` environment variables, or configure in the TrainConfig.
+
+#### C.6 Model Selection: pi0 vs pi0-FAST vs pi0.5
+
+| Feature | pi0 | pi0-FAST | pi0.5 |
+|---------|-----|----------|-------|
+| Architecture | Flow matching | Autoregressive (FAST tokenizer) | Flow matching (upgraded) |
+| Action chunk size | 50 steps | 10 steps | 50 steps |
+| Internal action dim | 32 (auto-padded) | 7 (explicit) | 32 (auto-padded) |
+| LoRA VRAM | ~22.5 GB | ~22.5 GB | ~22.5 GB |
+| Single-arm performance | Good | Good | Mixed (see note) |
+| Base checkpoint | `pi0_base` | `pi0_fast_base` | `pi05_base` |
+
+> **Note:** Community reports suggest pi0 may outperform pi0.5 on single-arm tasks ([GitHub #692](https://github.com/Physical-Intelligence/openpi/issues/692)). Start with pi0 LoRA, try pi0-FAST if you prefer shorter action horizons.
+
+#### C.7 Serve Fine-Tuned Policy
+
+```bash
+cd /home/chris/openpi
+
+# Start policy server (WebSocket, port 8000)
+uv run scripts/serve_policy.py policy:checkpoint \
+    --policy.config pi0_ur5e_lora \
+    --policy.dir checkpoints/pi0_ur5e_lora/ur5e_planner_v1/30000
+```
+
+**Client code for UR5e inference:**
+
+```python
+# Install client: pip install -e openpi/packages/openpi-client
+from openpi_client import websocket_client_policy as wcp
+from openpi_client import image_tools
+
+# Connect to server
+client = wcp.WebsocketClientPolicy(host="localhost", port=8000)
+
+# Send observation, get action chunk
+observation = {
+    "observation/image": image_tools.resize_with_pad(base_rgb, 224, 224),
+    "observation/wrist_image": image_tools.resize_with_pad(wrist_rgb, 224, 224),
+    "observation/state": state_7d,  # [q0-q5, gripper_norm] - unnormalized
+    "prompt": "Pick up the CPU and place it in the socket",
+}
+
+result = client.infer(observation)
+action_chunk = result["actions"]  # shape: (action_horizon, 7)
+# action_chunk[0] = immediate next action [q0..q5, gripper]
+# action_chunk[1:] = predicted future actions
+```
+
+**Action chunking strategy:** The model returns a full action chunk (50 steps for pi0, 10 for pi0-FAST). Execute N steps open-loop, then re-query with a fresh observation:
+
+```python
+chunk = client.infer(obs)["actions"]
+for i in range(execute_steps):
+    send_to_robot(chunk[i])  # absolute joint positions + gripper
+# Re-query with fresh observation
+```
+
+State and images should be sent **unnormalized** — the server handles normalization internally.
+
+#### C.8 Troubleshooting (OpenPI)
+
+| Issue | Solution |
+|-------|---------|
+| OOM during LoRA training | Set `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9`, reduce batch size to 1-2 |
+| Diverging loss | Check norm stats — dimensions with tiny std cause huge normalized values |
+| CUDA error on RTX 5090 | Ensure jaxlib >= 0.4.38 (JAX 0.5.3+ works, verified) |
+| Action dimension mismatch | pi0: uses `action_dim=32` internally (auto-padded). pi0-FAST: set `action_dim=7` explicitly |
+| Strange robot movements | Verify `DeltaActions` mask: `make_bool_mask(6, -1)` = delta for 6 joints, absolute for gripper |
+| Cannot resume training | Remove `--overwrite` flag — auto-detects latest checkpoint |
+| Missing norm stats | Run `compute_norm_stats.py` or use pre-trained stats via `asset_id="ur5e"` |
+| `ModuleNotFoundError` | Run from the openpi root: `cd /home/chris/openpi && uv run scripts/train.py ...` |
+
+---
 
 ## License
 
