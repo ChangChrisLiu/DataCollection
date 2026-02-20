@@ -297,21 +297,32 @@ The **first segment** (approach, before any gripper change) uses `moveL(path)` w
 
 ```
 data/vla_dataset/
-  episode_cpu_0218_143000/
-    frame_0000.pkl   <- phase: "teleop"
+  CPU_Extraction/                      <- subdirectory for CPU episodes
+    episode_cpu_0218_143000/
+      frame_0000.pkl   <- phase: "teleop"
+      ...
+      frame_0044.pkl   <- phase: "teleop"
+      frame_0045.pkl   <- phase: "skill"
+      ...
+      frame_0055.pkl   <- phase: "skill" (grasp failed, recording paused)
+      frame_0056.pkl   <- phase: "correction" (resumed on joystick input)
+      ...
+      frame_0065.pkl   <- phase: "correction"
+      frame_0066.pkl   <- phase: "skill_resume"
+      ...
+      frame_0070.pkl   <- phase: "skill_resume"
+      episode_meta.json
+  RAM_Extraction/                      <- subdirectory for RAM episodes
+    episode_ram_0218_150000/
+      frame_0000.pkl
+      ...
+      episode_meta.json
+  episode_cpu_0217_100000/             <- episodes at root level also discovered
+    frame_0000.pkl
     ...
-    frame_0044.pkl   <- phase: "teleop"
-    frame_0045.pkl   <- phase: "skill"
-    ...
-    frame_0055.pkl   <- phase: "skill" (grasp failed, recording paused)
-    frame_0056.pkl   <- phase: "correction" (resumed on joystick input)
-    ...
-    frame_0065.pkl   <- phase: "correction"
-    frame_0066.pkl   <- phase: "skill_resume"
-    ...
-    frame_0070.pkl   <- phase: "skill_resume"
-    episode_meta.json
 ```
+
+Episode discovery (`discover_episodes()`) recurses into subdirectories automatically. Both root-level and nested episodes are found and merged into a single dataset.
 
 ### Frame Format (`.pkl`)
 
@@ -378,12 +389,28 @@ Raw `.pkl` episodes are converted to model-specific formats locally, then transf
 During conversion, the following processing is applied **in this order** (ordering matters):
 
 1. **Phase filtering** — select frames by phase label(s)
-2. **No-op frame removal** — drop frames where joints haven't changed (threshold: 1e-4 rad)
-3. **Stop signal synthesis** — 3 copies of last frame with gripper=255 (planner/correction only)
-4. **Delta joint computation** — for RLDS action format
-5. **Image resizing** — 256x256 for RLDS (configurable)
+2. **Downsampling** — reduce frame rate from 30Hz to target FPS (5/10/15/30)
+3. **Trigger signal amplification** — preserve and repeat tail frames (planner/correction) OR **no-op frame removal** (e2e)
+4. **Stop signal synthesis** — 3 copies of last frame with gripper=255 (planner/correction only)
+5. **Delta EEF computation** — for RLDS action format (RLDS only; LeRobot uses absolute joints)
+6. **Image resizing** — 256x256 for RLDS (configurable)
 
-> **Important:** No-op removal (step 2) must happen **before** stop signal synthesis (step 3). Stop signals duplicate the last frame's joint positions, so they would be incorrectly removed as no-ops if the order were reversed.
+Trigger signal parameters scale with FPS to maintain ~0.5s tail duration:
+
+| FPS | n_tail | n_repeats | Stop frames |
+|-----|--------|-----------|-------------|
+| 30  | 15     | 3         | 3           |
+| 15  | 7      | 2         | 3           |
+| 10  | 5      | 2         | 3           |
+| 5   | 2      | 1         | 3           |
+
+**Language instructions** are auto-detected per episode from the directory path (CPU vs RAM). Each skill has a fixed description:
+- **CPU**: "Extract the CPU from the Bracket by unlocking it first, then extract the CPU and place it inside the yellow square area, then back home."
+- **RAM**: "Extract the RAM from the slot and place it inside the blue square area, then back home."
+
+**Episode discovery** recurses into subdirectories (`CPU_Extraction/`, `RAM_Extraction/`) and produces a single merged dataset containing both CPU and RAM episodes.
+
+> **Important:** Phase filtering must happen **before** downsampling so each phase has consistent sampling. Downsampling must happen **before** cleaning because at lower FPS, per-frame deltas are larger and the no-op threshold naturally catches fewer frames.
 
 ### RLDS Conversion (OpenVLA / OpenVLA-OFT)
 
@@ -404,38 +431,43 @@ All three inherit from `scripts/rlds_builder_base.py` which defines the shared R
 - Intended for training a policy that learns the entire task autonomously — the model must learn from visual context when to transition between approach, grasp, and transfer behaviors
 - Episodes that included correction (grasp failed then recovered) are labeled `success=True` if eventually completed — the planner target trains on the initial (potentially bad) approach from these episodes
 
+**Correction target** additionally extracts **near-grasp segments** from successful episodes (no correction phase) as supplementary training data. These segments cover the critical approach/extract/lift window of each skill:
+- **CPU**: 19.8s–22.2s after skill start
+- **RAM**: 0.2s–3.0s after skill start
+
+Near-grasp segments have no trigger amplification, no no-op removal, and no stop signals — they teach pure manipulation behavior.
+
 **RLDS Schema** (image size matches `--image-size`, default 256):
 ```
 observation.image:          (N, N, 3)     uint8    Base camera RGB (JPEG)
 observation.wrist_image:    (N, N, 3)     uint8    Wrist camera RGB (JPEG)
-observation.state:          (8,)          float32  [q0-q5, 0.0, gripper_0to1]
-action:                     (6,)          float32  Delta joint positions [dq0-dq5]
+observation.state:          (8,)          float32  [x, y, z, roll, pitch, yaw, 0.0, gripper_0to1]
+action:                     (6,)          float32  Delta EEF [dx, dy, dz, droll, dpitch, dyaw]
 action_gripper:             (1,)          float32  Gripper position 0-1
-language_instruction:       string                 Task description
+language_instruction:       string                 Task description (auto-detected per episode)
 language_embedding:         (512,)        float32  Universal Sentence Encoder
 ```
 
 **Build commands:**
 
 ```bash
-# Build a single target
+# Build a single target at 30Hz (default)
 python scripts/convert_to_rlds.py \
     --target planner \
-    --data-path data/vla_dataset \
-    --task "Pick up the CPU and place it in the socket"
+    --data-path data/vla_dataset
 
-# Build all three targets
+# Build all three targets at 10Hz
 python scripts/convert_to_rlds.py \
     --target all \
     --data-path data/vla_dataset \
-    --task "Pick up the CPU and place it in the socket"
+    --fps 10
 
 # Custom image size (224 for base OpenVLA, 256 for OFT)
 python scripts/convert_to_rlds.py \
     --target planner \
     --data-path data/vla_dataset \
-    --task "Pick up the CPU" \
-    --image-size 224
+    --image-size 224 \
+    --fps 10
 ```
 
 **Transfer to server:**
@@ -455,9 +487,10 @@ for traj in ds.take(1):
     for step in traj['steps']:
         print('image:', step['observation']['image'].shape)        # (256,256,3)
         print('wrist:', step['observation']['wrist_image'].shape)  # (256,256,3)
-        print('state:', step['observation']['state'].shape)        # (8,)
-        print('action:', step['action'].shape)                     # (6,)
-        print('gripper:', step['action_gripper'].shape)            # (1,)
+        print('state:', step['observation']['state'].numpy())      # [x,y,z,r,p,y,0,grip]
+        print('action:', step['action'].numpy())                   # [dx,dy,dz,dr,dp,dy]
+        print('gripper:', step['action_gripper'].numpy())          # [grip_0to1]
+        print('lang:', step['language_instruction'].numpy())       # per-episode
         break
 "
 ```
@@ -465,27 +498,36 @@ for traj in ds.take(1):
 ### LeRobot Conversion (OpenPI)
 
 ```bash
+# Build planner at 10Hz (language auto-detected per episode)
 python scripts/convert_to_lerobot.py \
     --target planner \
     --data-dir data/vla_dataset \
     --repo-id ChangChrisLiu/ur5e_planner \
-    --task "Pick up the CPU and place it in the socket" \
-    --fps 30
+    --fps 10
+
+# Build correction with near-grasp expansion
+python scripts/convert_to_lerobot.py \
+    --target correction \
+    --data-dir data/vla_dataset \
+    --repo-id ChangChrisLiu/ur5e_correction \
+    --fps 10
 ```
 
-**LeRobot Schema:**
+**LeRobot Schema** (joint-based, not EEF):
 ```
 observation.state:              (7,)          float32  [q0-q5, gripper/255]
 observation.images.base_rgb:    (256,256,3)   video    Base camera RGB
 observation.images.wrist_rgb:   (256,256,3)   video    Wrist camera RGB
 action:                         (7,)          float32  [q0_next..q5_next, gripper_next/255]
-task:                           string                 Language instruction
+task:                           string                 Language instruction (auto-detected)
 ```
 
 Options:
-- `--target` — `e2e`, `planner`, `correction`
+- `--target` — `e2e`, `planner`, `correction` (correction includes near-grasp expansion)
+- `--fps` — downsample to 5/10/15/30 Hz (default 30)
+- `--task` — override auto-detected language instruction
 - `--keep-noops` — disable no-op frame removal
-- `--push` — push to HuggingFace Hub after conversion
+- `--push-to-hub` — push to HuggingFace Hub after conversion
 
 ### Dataset Registration (OpenVLA / OpenVLA-OFT Fine-Tuning)
 
@@ -502,8 +544,8 @@ Add an entry to the `OXE_DATASET_CONFIGS` dictionary for each dataset. All UR5e 
     "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},
     "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
     "state_obs_keys": ["state"],
-    "state_encoding": StateEncoding.JOINT,
-    "action_encoding": ActionEncoding.JOINT_POS,
+    "state_encoding": StateEncoding.POS_EULER,
+    "action_encoding": ActionEncoding.EEF_POS,
 },
 ```
 
@@ -513,8 +555,8 @@ Repeat for `ur5e_vla_e2e` and `ur5e_vla_correction` with the same config block.
 |-------|-------|---------|
 | `image_obs_keys.primary` | `"image"` | Maps to `observation.image` in RLDS (base camera) |
 | `image_obs_keys.wrist` | `"wrist_image"` | Maps to `observation.wrist_image` in RLDS (wrist camera) |
-| `state_encoding` | `StateEncoding.JOINT` | State is 8D joint-space: `[q0-q5, 0.0, gripper]` |
-| `action_encoding` | `ActionEncoding.JOINT_POS` | Action is 6D delta joints (pre-transform) |
+| `state_encoding` | `StateEncoding.POS_EULER` | State is 8D EEF: `[x, y, z, roll, pitch, yaw, 0.0, gripper]` |
+| `action_encoding` | `ActionEncoding.EEF_POS` | Action is 6D delta EEF `[dx, dy, dz, droll, dpitch, dyaw]` (pre-transform) |
 
 #### Step 2: Register Dataset Transform
 
@@ -543,7 +585,7 @@ def ur5e_disassembly_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, 
     return trajectory
 ```
 
-This takes the 6D delta joint action from RLDS, reads the gripper position from the observation state, inverts it (OpenVLA convention: 1=open, 0=closed), and produces the final 7D action vector.
+This takes the 6D delta EEF action from RLDS, reads the gripper position from the observation state (last element, same position for both joint and EEF state), inverts it (OpenVLA convention: 1=open, 0=closed), and produces the final 7D action vector.
 
 #### Step 3: Place TFRecord Files
 
@@ -551,7 +593,7 @@ The RLDS TFRecord files must be accessible at `~/tensorflow_datasets/<dataset_na
 
 ```bash
 # On the collection machine (local)
-python scripts/convert_to_rlds.py --target all --data-path data/vla_dataset --task "Pick up the CPU"
+python scripts/convert_to_rlds.py --target all --data-path data/vla_dataset --fps 10
 
 # Transfer to training server
 rsync -avz ~/tensorflow_datasets/ur5e_vla_planner/ server:~/tensorflow_datasets/ur5e_vla_planner/
@@ -713,7 +755,7 @@ The RTX 5090 (compute capability 12.0) is not supported by the CUDA kernels ship
 
 ```bash
 CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
-    --target all --data-path data/vla_dataset --task "Pick up the CPU"
+    --target all --data-path data/vla_dataset --fps 10
 ```
 
 This only affects the conversion step (USE embedding is a one-time operation per build). Training on the server uses a different TF/CUDA version that supports the training GPU.
@@ -765,11 +807,11 @@ pip install peft==0.11.1
 #### A.1 Transfer RLDS Data
 
 ```bash
-# On the collection machine (local)
+# On the collection machine (local) — language auto-detected per episode
 python scripts/convert_to_rlds.py \
     --target planner \
     --data-path data/vla_dataset \
-    --task "Pick up the CPU and place it in the socket"
+    --fps 10
 
 # Transfer to training server
 rsync -avz ~/tensorflow_datasets/ur5e_vla_planner/ server:~/tensorflow_datasets/ur5e_vla_planner/
@@ -956,21 +998,19 @@ GIT_LFS_SKIP_SMUDGE=1 uv sync
 ```bash
 cd /home/chris/DataCollection
 
-# Convert planner dataset (or e2e, correction)
+# Convert planner dataset at 10Hz (language auto-detected per episode)
 python scripts/convert_to_lerobot.py \
     --target planner \
     --data-dir data/vla_dataset \
     --repo-id ChangChrisLiu/ur5e_planner \
-    --task "Pick up the CPU and place it in the socket" \
-    --fps 30
+    --fps 10
 
 # Push to HuggingFace Hub (recommended — OpenPI loads from Hub by default)
 python scripts/convert_to_lerobot.py \
     --target planner \
     --data-dir data/vla_dataset \
     --repo-id ChangChrisLiu/ur5e_planner \
-    --task "Pick up the CPU and place it in the socket" \
-    --fps 30 \
+    --fps 10 \
     --push-to-hub
 ```
 

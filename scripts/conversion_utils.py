@@ -4,20 +4,28 @@
 
 Supports both unified episodes (phase-labeled, single directory) and
 legacy dual-dataset episodes (vla_planner/vla_executor sub-directories).
+Recurses into subdirectories (CPU_Extraction/, RAM_Extraction/) for
+episode discovery.
 
 Functions:
-    discover_episodes       - Find all episode dirs (unified or legacy)
+    discover_episodes       - Find all episode dirs (unified or legacy, recurses subdirs)
     load_episode_frames     - Load all .pkl frames sorted by filename
     load_episode_metadata   - Load episode_meta.json
     filter_frames_by_phase  - Keep only frames matching given phases
+    downsample_frames       - Reduce frame rate from source_fps to target_fps
+    get_trigger_params      - FPS-scaled (n_tail, n_repeats) for trigger signals
     synthesize_stop_signals  - Deep-copy last frame N times with gripper=255
-    synthesize_trigger_signals - Amplify last N frames as trigger signal (3x repeat)
+    synthesize_trigger_signals - Amplify last N frames as trigger signal
     remove_noop_frames       - Remove frames where robot state hasn't changed
     resize_rgb_pil          - Resize RGB image using PIL LANCZOS (no cv2)
     normalize_gripper       - Convert 0-255 int -> 0.0-1.0 float
     rotvec_to_rpy           - UR rotation vector -> roll-pitch-yaw Euler angles
     compute_delta_eef       - Delta EEF between consecutive TCP poses
+    compute_delta_eef_rpy   - Delta EEF in [dx,dy,dz,droll,dpitch,dyaw] space
     compute_delta_joints    - Delta joints between consecutive frames
+    detect_skill_from_path  - Detect 'cpu' or 'ram' from episode path
+    get_task_instruction    - Get language instruction for a skill
+    extract_near_grasp_frames - Extract near-grasp segment from skill phase
     validate_episode_alignment - Temporal/spatial alignment checks
 """
 
@@ -38,15 +46,29 @@ from scipy.spatial.transform import Rotation
 # ---------------------------------------------------------------------------
 
 
+def _is_valid_episode(d: Path, dataset_type: Optional[str] = None) -> bool:
+    """Check if a directory is a valid episode (has frames, not failed)."""
+    if not d.is_dir() or not d.name.startswith("episode_"):
+        return False
+    if d.name.endswith("_Failed"):
+        return False
+    if dataset_type is None:
+        return any(d.glob("frame_*.pkl"))
+    else:
+        ds_dir = d / dataset_type
+        return ds_dir.exists() and any(ds_dir.glob("frame_*.pkl"))
+
+
 def discover_episodes(
     data_dir: str,
     dataset_type: Optional[str] = None,
 ) -> List[Path]:
-    """Find all episode directories.
+    """Find all episode directories, recursing into subdirectories.
 
-    Supports two layouts:
+    Supports three layouts:
       1. Unified (new): frame_*.pkl directly in episode dir
       2. Legacy: frame_*.pkl inside episode_dir/<dataset_type>/
+      3. Subdirectories: e.g. CPU_Extraction/episode_*, RAM_Extraction/episode_*
 
     Args:
         data_dir: Root data directory (e.g. "data/vla_dataset").
@@ -62,21 +84,16 @@ def discover_episodes(
 
     episodes = []
     for d in sorted(root.iterdir()):
-        if not d.is_dir() or not d.name.startswith("episode_"):
-            continue
-        # Skip failed episodes
-        if d.name.endswith("_Failed"):
+        if not d.is_dir():
             continue
 
-        if dataset_type is None:
-            # Unified format: frames at top level
-            if any(d.glob("frame_*.pkl")):
-                episodes.append(d)
-        else:
-            # Legacy format: frames in sub-directory
-            ds_dir = d / dataset_type
-            if ds_dir.exists() and any(ds_dir.glob("frame_*.pkl")):
-                episodes.append(d)
+        if _is_valid_episode(d, dataset_type):
+            episodes.append(d)
+        elif not d.name.startswith("episode_"):
+            # Recurse into subdirectories (CPU_Extraction/, RAM_Extraction/, etc.)
+            for sub in sorted(d.iterdir()):
+                if _is_valid_episode(sub, dataset_type):
+                    episodes.append(sub)
 
     return episodes
 
@@ -138,6 +155,53 @@ def filter_frames_by_phase(
         Filtered list preserving original order.
     """
     return [f for f in frames if f.get("phase", "teleop") in phases]
+
+
+def downsample_frames(
+    frames: List[Dict[str, Any]],
+    source_fps: int = 30,
+    target_fps: int = 30,
+) -> List[Dict[str, Any]]:
+    """Keep every Nth frame to achieve target_fps from source_fps.
+
+    Args:
+        frames: List of frame dicts at source_fps.
+        source_fps: Original recording FPS (typically 30).
+        target_fps: Desired output FPS (5, 10, 15, or 30).
+
+    Returns:
+        Downsampled list of frames. No-op if target_fps >= source_fps.
+    """
+    if target_fps >= source_fps or not frames:
+        return frames
+
+    step = source_fps / target_fps
+    n_out = int(len(frames) / step)
+    indices = [round(i * step) for i in range(n_out)]
+    return [frames[i] for i in indices if i < len(frames)]
+
+
+def get_trigger_params(fps: int) -> tuple:
+    """Return (n_tail, n_repeats) for trigger signal synthesis at given FPS.
+
+    Tail count scales proportionally from 15 frames at 30Hz (~0.5s):
+      30Hz: 15 frames, x3 repeats
+      15Hz:  7 frames, x2 repeats
+      10Hz:  5 frames, x2 repeats
+       5Hz:  2 frames, x1 repeat
+
+    Args:
+        fps: Target frame rate.
+
+    Returns:
+        (n_tail, n_repeats) tuple.
+    """
+    n_tail = max(2, round(15 * fps / 30))
+    if fps >= 30:
+        return n_tail, 3
+    if fps >= 10:
+        return n_tail, 2
+    return n_tail, 1
 
 
 def synthesize_stop_signals(
@@ -315,6 +379,127 @@ def compute_delta_joints(
     return np.array(joints_t1[:6], dtype=np.float64) - np.array(
         joints_t[:6], dtype=np.float64
     )
+
+
+def compute_delta_eef_rpy(
+    tcp_t: List[float],
+    tcp_t1: List[float],
+) -> np.ndarray:
+    """Compute delta EEF in [dx, dy, dz, droll, dpitch, dyaw] space.
+
+    Converts UR rotation vectors to RPY Euler angles before computing
+    the delta, producing a 6D action in EEF position + RPY space.
+
+    Args:
+        tcp_t:  [x, y, z, rx, ry, rz] at time t.
+        tcp_t1: [x, y, z, rx, ry, rz] at time t+1.
+
+    Returns:
+        (6,) float32 array [dx, dy, dz, droll, dpitch, dyaw].
+    """
+    pos_delta = np.array(tcp_t1[:3]) - np.array(tcp_t[:3])
+    rpy_t = rotvec_to_rpy(np.array(tcp_t[3:6]))
+    rpy_t1 = rotvec_to_rpy(np.array(tcp_t1[3:6]))
+    rpy_delta = rpy_t1 - rpy_t
+    return np.concatenate([pos_delta, rpy_delta]).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Task / skill detection
+# ---------------------------------------------------------------------------
+
+TASK_INSTRUCTIONS = {
+    "cpu": "Extract the CPU from the Bracket by unlocking it first, then extract the CPU and place it inside the yellow square area, then back home.",
+    "ram": "Extract the RAM from the slot and place it inside the blue square area, then back home.",
+}
+
+NEAR_GRASP_WINDOWS = {
+    "cpu": (19.8, 22.2),  # seconds after skill start
+    "ram": (0.2, 3.0),
+}
+
+
+def detect_skill_from_path(episode_path: Path) -> str:
+    """Detect 'cpu' or 'ram' from episode directory name or parent.
+
+    Checks episode name first (e.g. episode_cpu_0218_143022), then
+    parent directory (e.g. CPU_Extraction/).
+
+    Args:
+        episode_path: Path to episode directory.
+
+    Returns:
+        'cpu' or 'ram'.
+
+    Raises:
+        ValueError: If skill cannot be detected from path.
+    """
+    name = episode_path.name.lower()
+    if "cpu" in name:
+        return "cpu"
+    if "ram" in name:
+        return "ram"
+    parent = episode_path.parent.name.lower()
+    if "cpu" in parent:
+        return "cpu"
+    if "ram" in parent:
+        return "ram"
+    raise ValueError(f"Cannot detect skill from path: {episode_path}")
+
+
+def get_task_instruction(skill_name: str) -> str:
+    """Get the language instruction for a given skill.
+
+    Args:
+        skill_name: 'cpu' or 'ram'.
+
+    Returns:
+        Task description string.
+    """
+    return TASK_INSTRUCTIONS[skill_name]
+
+
+def extract_near_grasp_frames(
+    frames: List[Dict[str, Any]],
+    metadata: Dict[str, Any],
+    skill_name: str,
+    source_fps: int = 30,
+) -> List[Dict[str, Any]]:
+    """Extract near-grasp segment from skill phase of successful episodes.
+
+    Used for correction data expansion: takes the near-grasp portion of
+    successful skill executions to create additional correction training data.
+
+    Args:
+        frames: All frames from the episode (at source_fps).
+        metadata: Episode metadata dict (must contain phase_segments).
+        skill_name: 'cpu' or 'ram'.
+        source_fps: Recording FPS (default 30).
+
+    Returns:
+        List of frames from the near-grasp window, or empty list if
+        the skill phase or time window is not found.
+    """
+    if skill_name not in NEAR_GRASP_WINDOWS:
+        return []
+
+    t_start, t_end = NEAR_GRASP_WINDOWS[skill_name]
+
+    segments = metadata.get("phase_segments", [])
+    skill_seg = next((s for s in segments if s["phase"] == "skill"), None)
+    if skill_seg is None:
+        return []
+
+    skill_start_idx = skill_seg["start"]
+    frame_start = skill_start_idx + int(t_start * source_fps)
+    frame_end = skill_start_idx + int(t_end * source_fps)
+
+    # Clamp to actual skill bounds
+    frame_end = min(frame_end, skill_seg["end"] + 1)
+    if frame_start >= len(frames) or frame_start >= frame_end:
+        return []
+
+    return frames[frame_start:frame_end]
 
 
 # ---------------------------------------------------------------------------

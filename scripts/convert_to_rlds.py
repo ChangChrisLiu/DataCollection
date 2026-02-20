@@ -6,23 +6,26 @@ Uses the TFDS Python API directly (no `tfds build` CLI) to avoid
 the apache_beam dependency. Each target is a separate TFDS
 GeneratorBasedBuilder following the kpertsch/rlds_dataset_builder template.
 
+State/action format: EEF position + Euler RPY (not joints).
+Language instruction auto-detected per episode (CPU vs RAM).
+Supports downsampling via --fps (5/10/15/30).
+
 Targets:
     e2e        - Full end-to-end trajectory (all phases)
     planner    - Teleop approach + stop signal
-    correction - Recovery after grasp failure + stop signal
+    correction - Recovery after grasp failure + stop signal + near-grasp expansion
 
 Usage:
-    # Build planner dataset (default 256x256 images)
+    # Build planner dataset at 10Hz
     python scripts/convert_to_rlds.py \\
         --target planner \\
         --data-path data/vla_dataset \\
-        --task "Pick up the CPU and place it in the socket"
+        --fps 10
 
-    # Build all targets at once
+    # Build all targets at 30Hz (default)
     python scripts/convert_to_rlds.py \\
         --target all \\
-        --data-path data/vla_dataset \\
-        --task "Pick up the CPU and place it in the socket"
+        --data-path data/vla_dataset
 
 After building:
     # Datasets are in ~/tensorflow_datasets/ur5e_vla_<target>/1.0.0/
@@ -45,7 +48,7 @@ TARGETS = {
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
 
-def build_target(target_key: str, data_path: str, task: str, image_size: int):
+def build_target(target_key: str, data_path: str, image_size: int, fps: int):
     """Build one TFDS dataset target using the Python API."""
     dataset_name, module_name, class_name = TARGETS[target_key]
     builder_dir = SCRIPTS_DIR / dataset_name
@@ -57,14 +60,15 @@ def build_target(target_key: str, data_path: str, task: str, image_size: int):
     print(f"\n{'=' * 60}")
     print(f"  Building {dataset_name}")
     print(f"  Data path:  {data_path}")
-    print(f"  Task:       {task}")
+    print(f"  FPS:        {fps}")
     print(f"  Image size: {image_size}x{image_size}")
+    print(f"  Language:   auto-detected per episode (CPU/RAM)")
     print(f"{'=' * 60}\n")
 
     # Set environment variables for the builder
     os.environ["UR5E_DATA_PATH"] = str(Path(data_path).resolve())
-    os.environ["UR5E_TASK"] = task
     os.environ["UR5E_IMAGE_SIZE"] = str(image_size)
+    os.environ["UR5E_FPS"] = str(fps)
 
     # Import the builder module dynamically
     sys.path.insert(0, str(builder_dir))
@@ -109,10 +113,11 @@ def main():
         help="Path to unified episode data directory",
     )
     parser.add_argument(
-        "--task",
-        type=str,
-        required=True,
-        help="Language instruction for all episodes",
+        "--fps",
+        type=int,
+        default=30,
+        choices=[5, 10, 15, 30],
+        help="Target FPS for downsampling (default: 30, no downsampling)",
     )
     parser.add_argument(
         "--image-size",
@@ -129,7 +134,7 @@ def main():
 
     outputs = []
     for t in targets:
-        out = build_target(t, args.data_path, args.task, args.image_size)
+        out = build_target(t, args.data_path, args.image_size, args.fps)
         outputs.append((t, out))
 
     # Summary
