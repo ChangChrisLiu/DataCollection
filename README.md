@@ -553,32 +553,37 @@ for traj in ds.take(1):
 
 Unlike RLDS, LeRobot uses **joint angles** (not EEF) for state and action. OpenPI's `DeltaActions` transform converts absolute positions to deltas during training.
 
+> **Critical: Use OpenPI's Python environment for conversion.** The `tele` conda env has LeRobot 0.4.3 (dataset format v3.0), but OpenPI uses LeRobot 0.1.0 (format v2.1). These formats are **not interchangeable** — v3.0 datasets cannot be loaded by OpenPI. Always run the conversion script with OpenPI's Python to produce v2.1-compatible datasets:
+
 ```bash
-# Build the planner dataset (teleop approach only) at 10Hz output
-python scripts/convert_to_lerobot.py \
+# Build the planner dataset at 10Hz — using OpenPI's Python
+cd /home/chris/DataCollection
+/home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
     --target planner \
     --data-dir data/vla_dataset \
     --repo-id ChangChrisLiu/ur5e_planner \
     --fps 10
 
-# Build the correction dataset at 10Hz (includes near-grasp expansion from successful episodes)
-python scripts/convert_to_lerobot.py \
+# Build the correction dataset at 10Hz
+/home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
     --target correction \
     --data-dir data/vla_dataset \
     --repo-id ChangChrisLiu/ur5e_correction \
     --fps 10
 ```
 
+Images are stored as **PNG embedded in parquet** (`dtype: "image"`), not as MP4 video. This is required for OpenPI compatibility — OpenPI's data loader reads `dtype: "image"` features as PIL images from parquet files. Using `dtype: "video"` would require MP4 files that OpenPI's LeRobot v2.1 cannot decode on all systems.
+
 **LeRobot Schema** (joint-based, not EEF):
 ```
-observation.state:              (7,)          float32  [q0-q5, gripper/255]
-observation.images.base_rgb:    (256,256,3)   video    Base camera RGB
-observation.images.wrist_rgb:   (256,256,3)   video    Wrist camera RGB
-action:                         (7,)          float32  [q0_next..q5_next, gripper_next/255]
-task:                           string                 Language instruction (auto-detected from path)
+state:       (7,)          float32  [q0-q5, gripper/255]
+base_rgb:    (256,256,3)   image    Base camera RGB (PNG in parquet)
+wrist_rgb:   (256,256,3)   image    Wrist camera RGB (PNG in parquet)
+action:      (7,)          float32  [q0_next..q5_next, gripper_next/255]
+task:        string                 Language instruction (auto-detected from path)
 ```
 
-- `observation.state[6]` (gripper): current frame's normalized gripper (0.0=open, 1.0=closed, robot convention — no inversion)
+- `state[6]` (gripper): current frame's normalized gripper (0.0=open, 1.0=closed, robot convention — no inversion)
 - `action[0:6]`: next frame's absolute joint positions (not deltas — OpenPI's `DeltaActions` converts to deltas during training)
 - `action[6]`: next frame's normalized gripper. For trigger/stop/last frames: 1.0 (closed)
 
@@ -751,8 +756,9 @@ Both `Sibo/openvla/` and `Sibo/openvla-oft/` have these datasets already registe
 LeRobot datasets don't need code registration. The conversion script creates a self-contained dataset that is referenced by its HuggingFace repo ID:
 
 ```bash
-# Convert and push to Hub (language auto-detected per episode)
-python scripts/convert_to_lerobot.py \
+# Convert and push to Hub — MUST use OpenPI's Python for v2.1 format
+cd /home/chris/DataCollection
+/home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
     --target planner \
     --data-dir data/vla_dataset \
     --repo-id ChangChrisLiu/ur5e_planner \
@@ -760,7 +766,7 @@ python scripts/convert_to_lerobot.py \
     --push-to-hub
 
 # Or keep local only (no Hub push)
-python scripts/convert_to_lerobot.py \
+/home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
     --target planner \
     --data-dir data/vla_dataset \
     --repo-id ChangChrisLiu/ur5e_planner \
@@ -873,15 +879,22 @@ This only affects the conversion step (USE embedding is a one-time operation per
 
 ### LeRobot Version Mismatch (v3.0 vs v2.1)
 
-The data collection environment uses LeRobot **0.4.3** (dataset format v3.0), while OpenPI's vendored LeRobot is **0.1.0** (format v2.1). The formats are **not interchangeable** — they differ in metadata layout (`parquet` vs `jsonl`), data path templates, and internal APIs.
+The `tele` conda environment has LeRobot **0.4.3** (dataset format v3.0), while OpenPI's vendored LeRobot is **0.1.0** (format v2.1). The formats are **not interchangeable** — they differ in metadata layout, data path templates, and internal APIs (`finalize()` exists in v3.0 but not v2.1; import paths differ).
 
-This means:
-- **Conversion** always uses the `tele` / `datacollection` conda environment (LeRobot v3.0 API)
-- **Training with OpenPI** works because OpenPI reads the dataset through its own v2.1 API with its own data loader
-- **Local validation** of LeRobot datasets in the OpenPI environment requires either (a) converting directly using OpenPI's v2.1 `LeRobotDataset.create()` API, or (b) using the `tele` env for read-back
-- The `--push-to-hub` flag uploads the v3.0 format to HuggingFace Hub; OpenPI can download and re-index as needed
+**Solution: Always run `convert_to_lerobot.py` using OpenPI's Python:**
 
-This does not affect the training pipeline — it only matters if you need to inspect datasets locally across environments.
+```bash
+cd /home/chris/DataCollection
+/home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
+    --target planner --data-dir data/vla_dataset --fps 10
+```
+
+The conversion script auto-detects which LeRobot version is installed:
+- v2.1 import: `from lerobot.common.datasets.lerobot_dataset import LeRobotDataset`
+- v3.0 import: `from lerobot.datasets.lerobot_dataset import LeRobotDataset`
+- `finalize()` is only called if available (v3.0)
+
+This ensures the output dataset uses v2.1 format, which OpenPI can load directly.
 
 ### TorchCodec / FFmpeg (LeRobot read-back)
 
@@ -1189,18 +1202,20 @@ GIT_LFS_SKIP_SMUDGE=1 uv sync
 
 #### C.2 Convert Data to LeRobot Format
 
+> **You MUST run the conversion script using OpenPI's Python** (not the `tele` conda env). OpenPI uses LeRobot v2.1 format; the `tele` env produces v3.0 format which OpenPI cannot read. The conversion script auto-detects which LeRobot version is installed and works with both.
+
 ```bash
 cd /home/chris/DataCollection
 
-# Convert planner dataset at 10Hz (language auto-detected per episode)
-python scripts/convert_to_lerobot.py \
+# Convert planner dataset at 10Hz — using OpenPI's Python
+/home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
     --target planner \
     --data-dir data/vla_dataset \
     --repo-id ChangChrisLiu/ur5e_planner \
     --fps 10
 
 # Push to HuggingFace Hub (recommended — OpenPI loads from Hub by default)
-python scripts/convert_to_lerobot.py \
+/home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
     --target planner \
     --data-dir data/vla_dataset \
     --repo-id ChangChrisLiu/ur5e_planner \
@@ -1216,7 +1231,7 @@ Three files need to be added/modified in the OpenPI codebase.
 
 **File 1: Create `src/openpi/policies/ur5e_policy.py`**
 
-This defines how UR5e observations map to the model's input format and how model outputs map back to robot actions.
+This defines how UR5e observations map to the model's input format and how model outputs map back to robot actions. The input keys (`base_rgb`, `wrist_rgb`, `state`) match the LeRobot feature keys produced by `convert_to_lerobot.py`, remapped through `RepackTransform` in the data config below.
 
 ```python
 """UR5e policy transforms for OpenPI.
@@ -1248,10 +1263,12 @@ def _parse_image(image) -> np.ndarray:
 class UR5eInputs(transforms.DataTransformFn):
     """Convert UR5e observations to model input format.
 
-    Input keys (after repack):
-        observation/image:       base camera RGB
-        observation/wrist_image: wrist camera RGB
-        observation/state:       7D [q0-q5, gripper_norm]
+    Input keys (after RepackTransform):
+        base_rgb:    base camera RGB (from LeRobot "base_rgb" feature)
+        wrist_rgb:   wrist camera RGB (from LeRobot "wrist_rgb" feature)
+        state:       7D [q0-q5, gripper_norm] (from LeRobot "state" feature)
+        actions:     action chunk (training only)
+        prompt:      language instruction (from LeRobot "task" field)
 
     Output keys (model expects):
         state:       7D state vector
@@ -1264,11 +1281,11 @@ class UR5eInputs(transforms.DataTransformFn):
     model_type: _model.ModelType = _model.ModelType.PI0
 
     def __call__(self, data: dict) -> dict:
-        base_image = _parse_image(data["observation/image"])
-        wrist_image = _parse_image(data["observation/wrist_image"])
+        base_image = _parse_image(data["base_rgb"])
+        wrist_image = _parse_image(data["wrist_rgb"])
 
         inputs = {
-            "state": data["observation/state"],
+            "state": data["state"],
             "image": {
                 "base_0_rgb": base_image,
                 "left_wrist_0_rgb": wrist_image,
@@ -1332,14 +1349,17 @@ class LeRobotUR5eDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        # Repack: map LeRobot dataset keys to the keys UR5eInputs expects.
+        # Repack: map LeRobot dataset keys → UR5eInputs expected keys.
+        # Left side = output key (passed to UR5eInputs), right side = LeRobot feature key.
+        # The LeRobot feature keys (base_rgb, wrist_rgb, state, action) are set in
+        # convert_to_lerobot.py's FEATURES dict.
         repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform(
                     {
-                        "observation/image": "observation.images.base_rgb",
-                        "observation/wrist_image": "observation.images.wrist_rgb",
-                        "observation/state": "observation.state",
+                        "base_rgb": "base_rgb",
+                        "wrist_rgb": "wrist_rgb",
+                        "state": "state",
                         "actions": "action",
                         "prompt": "prompt",
                     }

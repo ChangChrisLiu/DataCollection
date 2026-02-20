@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/convert_to_lerobot.py
-"""Convert .pkl episodes to LeRobot v3 format for OpenPI (Pi-0 / Pi-0.5).
+"""Convert .pkl episodes to LeRobot format for OpenPI (Pi-0 / Pi-0.5).
 
 Supports three targets matching the RLDS conversion:
     e2e        - Full trajectory (all phases)
@@ -10,8 +10,13 @@ Supports three targets matching the RLDS conversion:
 Language instruction auto-detected per episode (CPU vs RAM).
 Supports downsampling via --fps (5/10/15/30).
 
-Usage:
-    python scripts/convert_to_lerobot.py \\
+IMPORTANT: Run this script from the OpenPI environment to ensure LeRobot format
+compatibility (v2.1). The datacollection/tele conda env has LeRobot 0.4.3 (v3.0
+format) which produces datasets that OpenPI cannot read.
+
+Usage (from OpenPI environment):
+    cd /path/to/DataCollection
+    /path/to/openpi/.venv/bin/python scripts/convert_to_lerobot.py \\
         --target planner \\
         --data-dir data/vla_dataset \\
         --repo-id ChangChrisLiu/ur5e_planner \\
@@ -21,14 +26,12 @@ OpenPI action format: ABSOLUTE next-step joint positions.
     action[t] = [joint_positions[t+1], gripper[t+1]/255]
     OpenPI's DeltaActions transform converts absolute -> delta during training.
 
-Output schema:
-    observation.state              (7,)          float32  [q0-q5, gripper/255]
-    observation.images.base_rgb    (256,256,3)   video    base camera
-    observation.images.wrist_rgb   (256,256,3)   video    wrist camera
-    action                         (7,)          float32  [q0_next..q5_next, gripper_next/255]
-    task                           string                 language instruction
-
-Requires: pip install lerobot
+Output schema (feature keys in LeRobot dataset):
+    base_rgb      (256,256,3)   image    Base camera (OAK-D Pro, third-person)
+    wrist_rgb     (256,256,3)   image    Wrist camera (RealSense D435i)
+    state         (7,)          float32  [q0-q5, gripper/255]
+    action        (7,)          float32  [q0_next..q5_next, gripper_next/255]
+    task          string                 Language instruction (auto-detected)
 """
 
 import argparse
@@ -80,18 +83,21 @@ TARGETS = {
 }
 
 
+# Feature definitions — images stored as PNG (dtype="image") for OpenPI compatibility.
+# OpenPI's LeRobot v2.1 loads dtype="image" as PIL images embedded in parquet.
+# dtype="video" would require MP4 files and is NOT compatible with OpenPI's data loader.
 FEATURES = {
-    "observation.images.base_rgb": {
-        "dtype": "video",
+    "base_rgb": {
+        "dtype": "image",
         "shape": (256, 256, 3),
         "names": ["height", "width", "channel"],
     },
-    "observation.images.wrist_rgb": {
-        "dtype": "video",
+    "wrist_rgb": {
+        "dtype": "image",
         "shape": (256, 256, 3),
         "names": ["height", "width", "channel"],
     },
-    "observation.state": {
+    "state": {
         "dtype": "float32",
         "shape": (7,),
         "names": {
@@ -121,21 +127,6 @@ FEATURES = {
             ],
         },
     },
-}
-
-FEATURES_PNG = {
-    "observation.images.base_rgb": {
-        "dtype": "image",
-        "shape": (256, 256, 3),
-        "names": ["height", "width", "channel"],
-    },
-    "observation.images.wrist_rgb": {
-        "dtype": "image",
-        "shape": (256, 256, 3),
-        "names": ["height", "width", "channel"],
-    },
-    "observation.state": FEATURES["observation.state"],
-    "action": FEATURES["action"],
 }
 
 
@@ -179,9 +170,9 @@ def convert_episode_frames(
 
         dataset.add_frame(
             {
-                "observation.images.base_rgb": base_rgb,
-                "observation.images.wrist_rgb": wrist_rgb,
-                "observation.state": state,
+                "base_rgb": base_rgb,
+                "wrist_rgb": wrist_rgb,
+                "state": state,
                 "action": action,
                 "task": task,
             }
@@ -190,7 +181,7 @@ def convert_episode_frames(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert .pkl episodes to LeRobot v3 format for OpenPI"
+        description="Convert .pkl episodes to LeRobot format for OpenPI"
     )
     parser.add_argument(
         "--target",
@@ -231,11 +222,6 @@ def main():
         help="Local output directory (default: ~/.cache/huggingface/lerobot/<repo-id>)",
     )
     parser.add_argument(
-        "--use-png",
-        action="store_true",
-        help="Store images as PNG instead of MP4 video",
-    )
-    parser.add_argument(
         "--push-to-hub",
         action="store_true",
         help="Push dataset to HuggingFace Hub after conversion",
@@ -266,8 +252,11 @@ def main():
     target_cfg = TARGETS[args.target]
     repo_id = args.repo_id or f"{target_cfg['default_repo']}_{args.fps}hz"
 
-    # Import lerobot here so the rest of the script can be imported without it
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    # Import lerobot — support both v2.1 (OpenPI) and v3.0 (datacollection env)
+    try:
+        from lerobot.common.datasets.lerobot_dataset import LeRobotDataset  # v2.1
+    except ImportError:
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset  # v3.0
 
     # Discover episodes (unified format)
     episodes = discover_episodes(args.data_dir)
@@ -286,7 +275,6 @@ def main():
     print(f"FPS:          {args.fps}")
     print(f"Trigger:      n_tail={n_tail}, n_repeats={n_repeats}")
     print(f"Task:         {args.task or 'auto-detect per episode'}")
-    print(f"Image format: {'PNG' if args.use_png else 'MP4 video'}")
     if args.target == "correction":
         print(f"Near-grasp:   enabled (correction expansion)")
     print()
@@ -312,14 +300,13 @@ def main():
         print("No episodes to convert.")
         return
 
-    # Create LeRobot dataset
-    features = FEATURES_PNG if args.use_png else FEATURES
+    # Create LeRobot dataset — images stored as PNG (not video)
     create_kwargs = {
         "repo_id": repo_id,
         "fps": args.fps,
         "robot_type": "ur5e",
-        "features": features,
-        "use_videos": not args.use_png,
+        "features": FEATURES,
+        "use_videos": False,
         "image_writer_threads": args.image_writer_threads,
     }
     if args.root:
@@ -400,8 +387,9 @@ def main():
                             f"  Near-grasp {idx}: {ep_path.name} [{skill_name}] -> {len(ng_frames)} frames"
                         )
 
-    # Finalize (required for LeRobot v3)
-    dataset.finalize()
+    # Finalize — required for LeRobot v3.0, not available in v2.1
+    if hasattr(dataset, "finalize"):
+        dataset.finalize()
 
     # Summary
     print(f"\n{'=' * 60}")
@@ -417,7 +405,7 @@ def main():
     print(f"  FPS:                {args.fps}")
     print(f"  Trigger params:     n_tail={n_tail}, n_repeats={n_repeats}")
     print(f"  Image resolution:   256x256")
-    print(f"  Image format:       {'PNG' if args.use_png else 'MP4 video'}")
+    print(f"  Image format:       PNG (embedded in parquet)")
     print(f"  State dim:          7 (6 joints + gripper)")
     print(f"  Action dim:         7 (6 joints + gripper, absolute next-step)")
     if args.root:
