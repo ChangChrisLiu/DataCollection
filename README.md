@@ -475,6 +475,29 @@ language_embedding:         (512,)        float32  Universal Sentence Encoder
 - `action_gripper`: next frame's normalized gripper position (same convention). For trigger/stop signal frames: always 1.0 (closed)
 - `action`: delta from current frame to next frame. For trigger/stop/last frames: zeros
 
+**Camera Images — Same Dataset, Two Models:**
+
+Each RLDS dataset stores **both** camera images (`observation.image` = base, `observation.wrist_image` = wrist). This is intentional — the same TFRecord files are used for both OpenVLA and OpenVLA-OFT fine-tuning, but each model consumes them differently:
+
+| Model | Images Used | Config Mechanism | Why |
+|-------|-------------|-----------------|-----|
+| **OpenVLA** | Base camera only (`image_primary`) | Hardcoded `load_camera_views=("primary",)` in dataset loader | OpenVLA was pretrained exclusively on **third-person camera** images ([paper](https://arxiv.org/abs/2406.09246): *"manipulation datasets with at least one 3rd person camera"*). It is a single-image architecture — the wrist image data exists in the TFRecord but is never loaded or processed. |
+| **OpenVLA-OFT** | Base + wrist (`image_primary` + `image_wrist`) | Set `--num_images_in_input 2` at training time | OFT extends the architecture to process multiple images through the fused SigLIP+DINOv2 backbone independently, then concatenates patches (256 patches per image → 512 total). With `--num_images_in_input 1` (default), it behaves like base OpenVLA. |
+
+The `image_obs_keys` in `configs.py` maps RLDS keys to the data loader:
+```python
+"image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"}
+```
+- `primary` → `image_primary` (base/third-person camera) — always loaded
+- `wrist` → `image_wrist` (wrist camera) — loaded only when OFT's `--num_images_in_input > 1`
+- `secondary` → `None` (padding, not used)
+
+This means: **you do NOT need separate datasets for OpenVLA vs OFT**. Build once, train with both. The unused wrist image adds no overhead to OpenVLA training because it is discarded at load time.
+
+**Dataset Size vs Raw Data:**
+
+Raw `.pkl` files store images as uncompressed numpy arrays (192 KB per 256x256x3 image × 2 cameras = 384 KB per frame). RLDS uses JPEG encoding (`encoding_format="jpeg"`), compressing each image to ~10-30 KB — a 6-15x reduction. Combined with phase filtering (planner keeps only teleop frames, correction keeps only correction frames) and no-op removal, RLDS datasets are typically 5-20x smaller than the raw data while containing all the same information.
+
 **Commands:**
 
 ```bash
@@ -922,7 +945,7 @@ Collect data → Convert to format → Transfer to training machine → Register
 
 ### A. OpenVLA Fine-Tuning (Server)
 
-OpenVLA uses LoRA fine-tuning via HuggingFace PEFT on a 7B parameter VLA model. Actions are tokenized into discrete bins.
+OpenVLA uses LoRA fine-tuning via HuggingFace PEFT on a 7B parameter VLA model. Actions are tokenized into discrete bins. OpenVLA is a **single-image model** — it was pretrained exclusively on third-person camera images and only uses the base camera (`image_primary`). The wrist camera image stored in the same RLDS dataset is ignored during training.
 
 #### Prerequisites
 
@@ -1016,16 +1039,20 @@ action_tokens = model.predict_action(**inputs)
 
 ### B. OpenVLA-OFT Fine-Tuning (Server)
 
-OpenVLA-OFT adds a **continuous action head** (L1 regression or diffusion) on top of the OpenVLA backbone, producing much smoother actions than the tokenized baseline.
+OpenVLA-OFT adds a **continuous action head** (L1 regression or diffusion) on top of the OpenVLA backbone, producing much smoother actions than the tokenized baseline. OFT also supports **multi-image input** — it can use both the base (third-person) and wrist cameras simultaneously, unlike base OpenVLA which only uses one image.
+
+**Same RLDS dataset, different training flags.** OFT uses the exact same TFRecord files as OpenVLA. The only differences are in `finetune.py` arguments — no dataset rebuild or separate conversion is needed.
 
 #### B.1 Transfer RLDS Data
 
-Same as OpenVLA — use `rsync` to transfer RLDS TFRecords to the server.
+Same as OpenVLA — use `rsync` to transfer RLDS TFRecords to the server. The same dataset files work for both models.
 
 #### B.2 Fine-Tune
 
+**Single-camera mode** (base camera only, same as OpenVLA — good baseline):
+
 ```bash
-# L1 regression action head (recommended starting point)
+# L1 regression, single image (default: --num_images_in_input 1)
 torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
     --vla_path "openvla/openvla-7b" \
     --data_root_dir ~/tensorflow_datasets \
@@ -1033,6 +1060,7 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
     --run_root_dir runs/ \
     --use_l1_regression True \
     --use_diffusion False \
+    --num_images_in_input 1 \
     --use_lora True \
     --lora_rank 32 \
     --batch_size 8 \
@@ -1043,8 +1071,41 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
     --image_aug True \
     --wandb_project "ur5e-openvla-oft" \
     --wandb_entity your-entity
+```
 
-# Diffusion action head (potentially better for multimodal actions)
+**Dual-camera mode** (base + wrist — leverages both cameras for richer visual context):
+
+```bash
+# L1 regression, two images (base + wrist)
+torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
+    --vla_path "openvla/openvla-7b" \
+    --data_root_dir ~/tensorflow_datasets \
+    --dataset_name ur5e_vla_planner_10hz \
+    --run_root_dir runs/ \
+    --use_l1_regression True \
+    --use_diffusion False \
+    --num_images_in_input 2 \
+    --use_lora True \
+    --lora_rank 32 \
+    --batch_size 8 \
+    --max_steps 200000 \
+    --learning_rate 5e-4 \
+    --num_steps_before_decay 100000 \
+    --save_freq 10000 \
+    --image_aug True \
+    --wandb_project "ur5e-openvla-oft-dual" \
+    --wandb_entity your-entity
+```
+
+When `--num_images_in_input 2`:
+- The data loader automatically loads both `image_primary` (base camera) and `image_wrist` (wrist camera) from the same TFRecord
+- Each image is processed independently through the fused SigLIP+DINOv2 backbone
+- Feature patches are concatenated: 256 patches per image → **512 patches total**
+- This doubles the visual token count, so expect ~1.5-2x slower training and higher VRAM usage
+
+**Diffusion action head** (potentially better for multimodal actions):
+
+```bash
 torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
     --vla_path "openvla/openvla-7b" \
     --data_root_dir ~/tensorflow_datasets \
@@ -1053,6 +1114,7 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
     --use_l1_regression False \
     --use_diffusion True \
     --num_diffusion_steps_train 50 \
+    --num_images_in_input 2 \
     --use_lora True \
     --lora_rank 32 \
     --batch_size 8 \
@@ -1064,6 +1126,7 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
+| `--num_images_in_input` | 1 | **1** = base camera only (like OpenVLA). **2** = base + wrist cameras (OFT multi-image). Must be >=2 to use wrist camera. |
 | `--use_l1_regression` | True | L1 loss continuous action head |
 | `--use_diffusion` | False | DDIM diffusion action head (mutually exclusive with L1) |
 | `--num_diffusion_steps_train` | 50 | Diffusion steps per training iteration |
@@ -1076,14 +1139,16 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
 
 **OpenVLA vs OpenVLA-OFT Comparison:**
 
-| Feature | OpenVLA | OpenVLA-OFT |
-|---------|---------|------------|
-| Action representation | Tokenized (discrete bins) | Continuous (L1 or diffusion) |
-| Action smoothness | Quantized steps | Smooth continuous |
-| LR schedule | Fixed | MultiStepLR with decay |
-| Default batch size | 16 | 8 |
-| Checkpoint strategy | Latest only | All checkpoints |
-| Additional heads | None | L1/Diffusion/FiLM/Proprio |
+| Feature | OpenVLA | OpenVLA-OFT (1 image) | OpenVLA-OFT (2 images) |
+|---------|---------|----------------------|----------------------|
+| Camera input | Base only (hardcoded) | Base only | Base + wrist |
+| Action representation | Tokenized (discrete bins) | Continuous (L1 or diffusion) | Continuous (L1 or diffusion) |
+| Visual patches | 256 | 256 | 512 (concatenated) |
+| Action smoothness | Quantized steps | Smooth continuous | Smooth continuous |
+| LR schedule | Fixed | MultiStepLR with decay | MultiStepLR with decay |
+| Default batch size | 16 | 8 | 8 (may need to lower) |
+| Checkpoint strategy | Latest only | All checkpoints | All checkpoints |
+| Additional heads | None | L1/Diffusion/FiLM/Proprio | L1/Diffusion/FiLM/Proprio |
 
 ---
 
