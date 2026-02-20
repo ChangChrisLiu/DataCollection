@@ -87,6 +87,7 @@ For data conversion (see [Data Conversion](#data-conversion)):
 ```bash
 # RLDS / OpenVLA
 pip install tensorflow tensorflow-datasets tensorflow-hub
+pip install sentence-transformers  # Universal Sentence Encoder language embeddings
 
 # LeRobot / OpenPI
 pip install lerobot
@@ -475,6 +476,13 @@ python scripts/convert_to_rlds.py \
     --fps 10
 ```
 
+> **TFDS Caching:** TFDS does not overwrite existing builds. If you rebuild a dataset at a different `--fps` (or with different data), you must delete the existing dataset directory first:
+> ```bash
+> rm -rf ~/tensorflow_datasets/ur5e_vla_planner/
+> python scripts/convert_to_rlds.py --target planner --data-path data/vla_dataset --fps 10
+> ```
+> Different targets (`ur5e_vla_planner`, `ur5e_vla_e2e`, `ur5e_vla_correction`) have separate directories and can coexist.
+
 **Transfer to server:**
 
 ```bash
@@ -769,6 +777,18 @@ CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
 
 This only affects the conversion step (USE embedding is a one-time operation per build). Training on the server uses a different TF/CUDA version that supports the training GPU.
 
+### LeRobot Version Mismatch (v3.0 vs v2.1)
+
+The data collection environment uses LeRobot **0.4.3** (dataset format v3.0), while OpenPI's vendored LeRobot is **0.1.0** (format v2.1). The formats are **not interchangeable** — they differ in metadata layout (`parquet` vs `jsonl`), data path templates, and internal APIs.
+
+This means:
+- **Conversion** always uses the `tele` / `datacollection` conda environment (LeRobot v3.0 API)
+- **Training with OpenPI** works because OpenPI reads the dataset through its own v2.1 API with its own data loader
+- **Local validation** of LeRobot datasets in the OpenPI environment requires either (a) converting directly using OpenPI's v2.1 `LeRobotDataset.create()` API, or (b) using the `tele` env for read-back
+- The `--push-to-hub` flag uploads the v3.0 format to HuggingFace Hub; OpenPI can download and re-index as needed
+
+This does not affect the training pipeline — it only matters if you need to inspect datasets locally across environments.
+
 ### TorchCodec / FFmpeg (LeRobot read-back)
 
 LeRobot v3 uses `torchcodec` for video decoding. If `libtorchcodec` fails to load (FFmpeg version mismatch), dataset **creation** still works (uses SVT-AV1 encoder directly), but **reading back** the dataset locally will fail. This does not affect training on a properly configured server.
@@ -778,6 +798,35 @@ LeRobot v3 uses `torchcodec` for video decoding. If `libtorchcodec` fails to loa
 ```bash
 conda install -c conda-forge ffmpeg=6
 pip install torchcodec
+```
+
+---
+
+## Pipeline Validation
+
+The full conversion and training-ingestion pipeline has been validated end-to-end across all three frameworks using 4 test episodes (2 CPU + 2 RAM, including both successful and correction episodes).
+
+**Validated conversions (3 targets x 2 FPS x 2 formats = 12 builds):**
+
+| Target | 30Hz Frames | 10Hz Frames | Ratio | Episodes |
+|--------|-------------|-------------|-------|----------|
+| planner | 2,025 | 678 | 2.99x | 4 (all with stop/trigger signals) |
+| e2e | 4,965 | 1,685 | 2.95x | 4 |
+| correction | 594 | 191 | 3.11x | 4 (2 real correction + 2 near-grasp) |
+
+**Validated framework ingestion:**
+
+| Framework | Environment | Result |
+|-----------|------------|--------|
+| OpenVLA | `conda run -n vla` in `Sibo/openvla/` | 7D actions, gripper inversion, images, language |
+| OpenVLA-OFT | `conda run -n vla` in `Sibo/openvla-oft/` | Same pipeline, verified identical |
+| OpenPI | `uv run` in `openpi/` | 7D state/action, dual cameras, task strings |
+
+**Gripper convention verified through full chain:**
+```
+Robot (0-255) → RLDS state/action_gripper (0.0-1.0, same convention)
+             → OpenVLA transform inverts (1.0=open, 0.0=closed)
+             → LeRobot state/action (0.0-1.0, same as robot, no inversion)
 ```
 
 ---
