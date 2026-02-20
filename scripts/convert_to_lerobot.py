@@ -264,7 +264,7 @@ def main():
     args = parser.parse_args()
 
     target_cfg = TARGETS[args.target]
-    repo_id = args.repo_id or target_cfg["default_repo"]
+    repo_id = args.repo_id or f"{target_cfg['default_repo']}_{args.fps}hz"
 
     # Import lerobot here so the rest of the script can be imported without it
     from lerobot.datasets.lerobot_dataset import LeRobotDataset

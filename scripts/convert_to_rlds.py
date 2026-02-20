@@ -10,6 +10,9 @@ State/action format: EEF position + Euler RPY (not joints).
 Language instruction auto-detected per episode (CPU vs RAM).
 Supports downsampling via --fps (5/10/15/30).
 
+Output dataset names include the FPS suffix for disambiguation:
+    ur5e_vla_planner_10hz, ur5e_vla_planner_30hz, etc.
+
 Targets:
     e2e        - Full end-to-end trajectory (all phases)
     planner    - Teleop approach + stop signal
@@ -28,9 +31,9 @@ Usage:
         --data-path data/vla_dataset
 
 After building:
-    # Datasets are in ~/tensorflow_datasets/ur5e_vla_<target>/1.0.0/
+    # Datasets are in ~/tensorflow_datasets/ur5e_vla_<target>_<fps>hz/1.0.0/
     # Transfer to server:
-    rsync -avz ~/tensorflow_datasets/ur5e_vla_planner/ server:~/tensorflow_datasets/ur5e_vla_planner/
+    rsync -avz ~/tensorflow_datasets/ur5e_vla_planner_10hz/ server:~/tensorflow_datasets/ur5e_vla_planner_10hz/
 """
 
 import argparse
@@ -57,8 +60,10 @@ def build_target(target_key: str, data_path: str, image_size: int, fps: int):
         print(f"ERROR: Builder directory not found: {builder_dir}")
         sys.exit(1)
 
+    output_name = f"{dataset_name}_{fps}hz"
+
     print(f"\n{'=' * 60}")
-    print(f"  Building {dataset_name}")
+    print(f"  Building {output_name}")
     print(f"  Data path:  {data_path}")
     print(f"  FPS:        {fps}")
     print(f"  Image size: {image_size}x{image_size}")
@@ -76,6 +81,14 @@ def build_target(target_key: str, data_path: str, image_size: int, fps: int):
     module = importlib.import_module(module_name)
     builder_cls = getattr(module, class_name)
 
+    # Create a subclass with FPS-suffixed name so TFDS writes to
+    # ~/tensorflow_datasets/<dataset_name>_<fps>hz/1.0.0/
+    builder_cls = type(
+        f"{class_name}_{fps}hz",
+        (builder_cls,),
+        {"name": output_name},
+    )
+
     # Build using Python API (avoids tfds CLI + apache_beam dependency)
     builder = builder_cls()
     builder.download_and_prepare()
@@ -92,7 +105,7 @@ def build_target(target_key: str, data_path: str, image_size: int, fps: int):
         total_steps += traj["episode_metadata"]["trajectory_length"].numpy()
     print(f"  Verified: {n_episodes} episodes, {total_steps} total steps")
 
-    return output_dir
+    return output_dir, output_name
 
 
 def main():
@@ -134,25 +147,23 @@ def main():
 
     outputs = []
     for t in targets:
-        out = build_target(t, args.data_path, args.image_size, args.fps)
-        outputs.append((t, out))
+        out_dir, out_name = build_target(t, args.data_path, args.image_size, args.fps)
+        outputs.append((t, out_dir, out_name))
 
     # Summary
     print(f"\n{'=' * 60}")
     print("RLDS Build Summary")
     print(f"{'=' * 60}")
-    for name, path in outputs:
-        print(f"  {name:12s} -> {path}")
+    for name, path, out_name in outputs:
+        print(f"  {out_name:28s} -> {path}")
     print()
     print("To transfer to server:")
-    for name, path in outputs:
-        ds_name, _, _ = TARGETS[name]
-        print(f"  rsync -avz {path}/ server:~/tensorflow_datasets/{ds_name}/")
+    for name, path, out_name in outputs:
+        print(f"  rsync -avz {path}/ server:~/tensorflow_datasets/{out_name}/")
     print()
     print("To verify:")
-    for name, path in outputs:
-        ds_name, _, _ = TARGETS[name]
-        print(f"  python -c \"import tensorflow_datasets as tfds; b = tfds.builder('{ds_name}'); print(b.info)\"")
+    for name, path, out_name in outputs:
+        print(f"  python -c \"import tensorflow_datasets as tfds; b = tfds.builder('{out_name}'); print(b.info)\"")
 
 
 if __name__ == "__main__":

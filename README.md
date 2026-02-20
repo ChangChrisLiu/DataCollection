@@ -379,7 +379,7 @@ There are two entry-point scripts — one per output format. You only ever run t
 
 | Script | Output Format | Used By | Output Location |
 |--------|--------------|---------|-----------------|
-| `scripts/convert_to_rlds.py` | RLDS TFRecords | OpenVLA, OpenVLA-OFT | `~/tensorflow_datasets/ur5e_vla_<target>/` |
+| `scripts/convert_to_rlds.py` | RLDS TFRecords | OpenVLA, OpenVLA-OFT | `~/tensorflow_datasets/ur5e_vla_<target>_<fps>hz/` |
 | `scripts/convert_to_lerobot.py` | LeRobot v3 | OpenPI | HuggingFace Hub or local directory |
 
 Both scripts share the same processing logic from `scripts/conversion_utils.py` (episode discovery, phase filtering, downsampling, no-op removal, trigger/stop signal synthesis).
@@ -494,17 +494,17 @@ CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
 
 The default `--image-size 256` works for both base OpenVLA and OFT — the training pipeline resizes images internally to match the model's vision backbone (224x224 for base OpenVLA's `dinosiglip-vit-so-224px`, 256x256 for OFT). You do not need separate datasets at different image sizes.
 
-> **TFDS Caching:** TFDS does not overwrite existing output. If you re-run conversion at a different `--fps` (or with different data), you must delete the existing dataset directory first:
+> **TFDS Caching:** TFDS does not overwrite existing output. If you re-run conversion with different data, you must delete the existing dataset directory first:
 > ```bash
-> rm -rf ~/tensorflow_datasets/ur5e_vla_planner/
+> rm -rf ~/tensorflow_datasets/ur5e_vla_planner_10hz/
 > python scripts/convert_to_rlds.py --target planner --data-path data/vla_dataset --fps 10
 > ```
-> Different targets (`ur5e_vla_planner`, `ur5e_vla_e2e`, `ur5e_vla_correction`) have separate directories and can coexist.
+> Different targets and FPS variants (`ur5e_vla_planner_10hz`, `ur5e_vla_planner_30hz`, etc.) have separate directories and can coexist.
 
 **Transfer to server:**
 
 ```bash
-rsync -avz ~/tensorflow_datasets/ur5e_vla_planner/ server:~/tensorflow_datasets/ur5e_vla_planner/
+rsync -avz ~/tensorflow_datasets/ur5e_vla_planner_10hz/ server:~/tensorflow_datasets/ur5e_vla_planner_10hz/
 ```
 
 **Verify:**
@@ -512,7 +512,7 @@ rsync -avz ~/tensorflow_datasets/ur5e_vla_planner/ server:~/tensorflow_datasets/
 ```bash
 python -c "
 import tensorflow_datasets as tfds
-b = tfds.builder('ur5e_vla_planner', data_dir='$HOME/tensorflow_datasets')
+b = tfds.builder('ur5e_vla_planner_10hz', data_dir='$HOME/tensorflow_datasets')
 ds = b.as_dataset(split='train')
 for traj in ds.take(1):
     for step in traj['steps']:
@@ -570,25 +570,99 @@ Options:
 
 ### Dataset Registration (OpenVLA / OpenVLA-OFT Fine-Tuning)
 
-To fine-tune OpenVLA or OpenVLA-OFT on your RLDS datasets, you must register them in the training codebase. Two files need modification in the OpenVLA/OFT repository:
+To fine-tune OpenVLA or OpenVLA-OFT on your RLDS datasets, you must register them in the training codebase. Two files need modification in the OpenVLA/OFT repository. The instructions below are **self-contained** — copy-paste ready for a fresh server installation.
 
-#### Step 1: Register Dataset Configuration
+All dataset names include an FPS suffix (e.g., `ur5e_vla_planner_30hz`) so that multiple FPS variants can coexist on the same server.
+
+#### Step 1: Add the Transform Function
+
+**File:** `prismatic/vla/datasets/rlds/oxe/transforms.py`
+
+Add this function definition (before the `OXE_STANDARDIZATION_TRANSFORMS` registry dict):
+
+```python
+def ur5e_disassembly_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    """UR5e e-waste disassembly transform.
+
+    RLDS schema:
+        observation.state: (8,) [x, y, z, roll, pitch, yaw, 0.0, gripper_0to1]
+        action:            (6,) [dx, dy, dz, droll, dpitch, dyaw]
+        action_gripper:    (1,) next frame's gripper (0=open, 1=closed)
+
+    This transform:
+        1. Reads gripper from observation.state[-1] (0=open, 1=closed)
+        2. Inverts to OpenVLA convention (1=open, 0=closed)
+        3. Concatenates with 6D delta EEF action -> 7D action
+    """
+    gripper_action = trajectory["observation"]["state"][:, -1:]
+    gripper_action = invert_gripper_actions(tf.clip_by_value(gripper_action, 0, 1))
+    trajectory["action"] = tf.concat(
+        (trajectory["action"][:, :6], gripper_action), axis=-1,
+    )
+    return trajectory
+```
+
+Then add these entries to the `OXE_STANDARDIZATION_TRANSFORMS` dictionary:
+
+```python
+    "ur5e_vla_e2e_10hz": ur5e_disassembly_dataset_transform,
+    "ur5e_vla_e2e_30hz": ur5e_disassembly_dataset_transform,
+    "ur5e_vla_planner_10hz": ur5e_disassembly_dataset_transform,
+    "ur5e_vla_planner_30hz": ur5e_disassembly_dataset_transform,
+    "ur5e_vla_correction_10hz": ur5e_disassembly_dataset_transform,
+    "ur5e_vla_correction_30hz": ur5e_disassembly_dataset_transform,
+```
+
+#### Step 2: Register Dataset Configuration
 
 **File:** `prismatic/vla/datasets/rlds/oxe/configs.py`
 
-Add an entry to the `OXE_DATASET_CONFIGS` dictionary for each dataset. All UR5e datasets use the same configuration:
+Add these entries to the `OXE_DATASET_CONFIGS` dictionary. All UR5e VLA datasets use the same configuration — only the name differs:
 
 ```python
-"ur5e_vla_planner": {
-    "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},
-    "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
-    "state_obs_keys": ["state"],
-    "state_encoding": StateEncoding.POS_EULER,
-    "action_encoding": ActionEncoding.EEF_POS,
-},
+    "ur5e_vla_e2e_10hz": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.POS_EULER,
+        "action_encoding": ActionEncoding.EEF_POS,
+    },
+    "ur5e_vla_e2e_30hz": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.POS_EULER,
+        "action_encoding": ActionEncoding.EEF_POS,
+    },
+    "ur5e_vla_planner_10hz": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.POS_EULER,
+        "action_encoding": ActionEncoding.EEF_POS,
+    },
+    "ur5e_vla_planner_30hz": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.POS_EULER,
+        "action_encoding": ActionEncoding.EEF_POS,
+    },
+    "ur5e_vla_correction_10hz": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.POS_EULER,
+        "action_encoding": ActionEncoding.EEF_POS,
+    },
+    "ur5e_vla_correction_30hz": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.POS_EULER,
+        "action_encoding": ActionEncoding.EEF_POS,
+    },
 ```
-
-Repeat for `ur5e_vla_e2e` and `ur5e_vla_correction` with the same config block.
 
 | Field | Value | Meaning |
 |-------|-------|---------|
@@ -597,59 +671,31 @@ Repeat for `ur5e_vla_e2e` and `ur5e_vla_correction` with the same config block.
 | `state_encoding` | `StateEncoding.POS_EULER` | State is 8D EEF: `[x, y, z, roll, pitch, yaw, 0.0, gripper]` |
 | `action_encoding` | `ActionEncoding.EEF_POS` | Action is 6D delta EEF `[dx, dy, dz, droll, dpitch, dyaw]` (pre-transform) |
 
-#### Step 2: Register Dataset Transform
-
-**File:** `prismatic/vla/datasets/rlds/oxe/transforms.py`
-
-All UR5e datasets reuse the same transform function. Add entries to the `OXE_STANDARDIZATION_TRANSFORMS` dictionary:
-
-```python
-"ur5e_vla_e2e": ur5e_disassembly_dataset_transform,
-"ur5e_vla_planner": ur5e_disassembly_dataset_transform,
-"ur5e_vla_correction": ur5e_disassembly_dataset_transform,
-```
-
-The transform function is already defined in the file:
-
-```python
-def ur5e_disassembly_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
-    # Extract gripper from observation state (last element)
-    gripper_action = trajectory["observation"]["state"][:, -1:]
-    # Invert: raw 0=open,1=close -> OpenVLA 1=open,0=close
-    gripper_action = invert_gripper_actions(tf.clip_by_value(gripper_action, 0, 1))
-    # Combine: 6D delta EEF + 1D inverted gripper = 7D action
-    trajectory["action"] = tf.concat(
-        (trajectory["action"][:, :6], gripper_action), axis=-1,
-    )
-    return trajectory
-```
-
-This produces a 7D action: `[dx, dy, dz, droll, dpitch, dyaw, gripper_inverted]`. It takes the 6D delta EEF action from RLDS, reads the **current frame's** gripper from `observation.state[-1]` (0=open, 1=closed), inverts it to match the OpenVLA convention (1=open, 0=closed), and concatenates. Note: it uses the current state's gripper, not `action_gripper` (next frame's gripper) — this is consistent with how other datasets are handled in the OXE pipeline.
-
 #### Step 3: Place TFRecord Files
 
 The RLDS TFRecord files must be accessible at `~/tensorflow_datasets/<dataset_name>/1.0.0/` on the training machine:
 
 ```bash
-# On the collection machine (local)
-python scripts/convert_to_rlds.py --target all --data-path data/vla_dataset --fps 10
+# On the collection machine (local) — build all three targets at 10Hz
+CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
+    --target all --data-path data/vla_dataset --fps 10
 
 # Transfer to training server
-rsync -avz ~/tensorflow_datasets/ur5e_vla_planner/ server:~/tensorflow_datasets/ur5e_vla_planner/
-rsync -avz ~/tensorflow_datasets/ur5e_vla_e2e/ server:~/tensorflow_datasets/ur5e_vla_e2e/
-rsync -avz ~/tensorflow_datasets/ur5e_vla_correction/ server:~/tensorflow_datasets/ur5e_vla_correction/
+rsync -avz ~/tensorflow_datasets/ur5e_vla_planner_10hz/ server:~/tensorflow_datasets/ur5e_vla_planner_10hz/
+rsync -avz ~/tensorflow_datasets/ur5e_vla_e2e_10hz/ server:~/tensorflow_datasets/ur5e_vla_e2e_10hz/
+rsync -avz ~/tensorflow_datasets/ur5e_vla_correction_10hz/ server:~/tensorflow_datasets/ur5e_vla_correction_10hz/
 ```
 
 #### Step 4: Launch Fine-Tuning
 
-Reference the dataset by name in the training command:
+Reference the FPS-suffixed dataset name in the training command:
 
 ```bash
-# OpenVLA fine-tuning (example)
+# OpenVLA fine-tuning (example, 10Hz planner)
 torchrun --nproc-per-node 1 vla-scripts/finetune.py \
     --vla_path "openvla/openvla-7b" \
     --data_root_dir ~/tensorflow_datasets \
-    --dataset_name ur5e_vla_planner \
+    --dataset_name ur5e_vla_planner_10hz \
     --run_root_dir runs/ \
     --adapter_tmp_dir adapters/ \
     --lora_rank 32 \
@@ -662,17 +708,20 @@ torchrun --nproc-per-node 1 vla-scripts/finetune.py \
     --save_steps 2500
 ```
 
-> **Note:** These two files (`configs.py` and `transforms.py`) are the **only** modifications needed in the OpenVLA/OFT codebase. No other files require changes. The dataset name you register must exactly match the TFDS builder name (e.g., `ur5e_vla_planner`).
+> **Note:** These two files (`configs.py` and `transforms.py`) are the **only** modifications needed in the OpenVLA/OFT codebase. No other files require changes. The dataset name you register must exactly match the TFDS builder name (e.g., `ur5e_vla_planner_10hz`).
 
 #### Currently Registered Datasets
 
 Both `Sibo/openvla/` and `Sibo/openvla-oft/` have these datasets already registered:
 
-| Dataset Name | Target | State/Action Format | Registered In |
-|-------------|--------|---------------------|---------------|
-| `ur5e_vla_e2e` | `--target e2e` | EEF + Euler RPY (POS_EULER / EEF_POS) | Both repos |
-| `ur5e_vla_planner` | `--target planner` | EEF + Euler RPY (POS_EULER / EEF_POS) | Both repos |
-| `ur5e_vla_correction` | `--target correction` | EEF + Euler RPY (POS_EULER / EEF_POS) | Both repos |
+| Dataset Name | Target | FPS | State/Action Format | Registered In |
+|-------------|--------|-----|---------------------|---------------|
+| `ur5e_vla_e2e_10hz` | `--target e2e` | 10 | EEF + Euler RPY (POS_EULER / EEF_POS) | Both repos |
+| `ur5e_vla_e2e_30hz` | `--target e2e` | 30 | EEF + Euler RPY (POS_EULER / EEF_POS) | Both repos |
+| `ur5e_vla_planner_10hz` | `--target planner` | 10 | EEF + Euler RPY (POS_EULER / EEF_POS) | Both repos |
+| `ur5e_vla_planner_30hz` | `--target planner` | 30 | EEF + Euler RPY (POS_EULER / EEF_POS) | Both repos |
+| `ur5e_vla_correction_10hz` | `--target correction` | 10 | EEF + Euler RPY (POS_EULER / EEF_POS) | Both repos |
+| `ur5e_vla_correction_30hz` | `--target correction` | 30 | EEF + Euler RPY (POS_EULER / EEF_POS) | Both repos |
 
 ### Dataset Registration (LeRobot / OpenPI Fine-Tuning)
 
@@ -893,10 +942,10 @@ CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
     --data-path data/vla_dataset \
     --fps 10
 
-# Transfer to training server
-rsync -avz ~/tensorflow_datasets/ur5e_vla_planner/ server:~/tensorflow_datasets/ur5e_vla_planner/
-rsync -avz ~/tensorflow_datasets/ur5e_vla_e2e/ server:~/tensorflow_datasets/ur5e_vla_e2e/
-rsync -avz ~/tensorflow_datasets/ur5e_vla_correction/ server:~/tensorflow_datasets/ur5e_vla_correction/
+# Transfer to training server (dataset names include FPS suffix)
+rsync -avz ~/tensorflow_datasets/ur5e_vla_planner_10hz/ server:~/tensorflow_datasets/ur5e_vla_planner_10hz/
+rsync -avz ~/tensorflow_datasets/ur5e_vla_e2e_10hz/ server:~/tensorflow_datasets/ur5e_vla_e2e_10hz/
+rsync -avz ~/tensorflow_datasets/ur5e_vla_correction_10hz/ server:~/tensorflow_datasets/ur5e_vla_correction_10hz/
 ```
 
 #### A.2 Register Dataset (Already Done)
@@ -910,7 +959,7 @@ Both `Sibo/openvla/` and `Sibo/openvla-oft/` have the datasets pre-registered in
 torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
     --vla_path "openvla/openvla-7b" \
     --data_root_dir ~/tensorflow_datasets \
-    --dataset_name ur5e_vla_planner \
+    --dataset_name ur5e_vla_planner_10hz \
     --run_root_dir runs/ \
     --adapter_tmp_dir adapters/ \
     --lora_rank 32 \
@@ -926,7 +975,7 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
 torchrun --standalone --nnodes 1 --nproc-per-node $K vla-scripts/finetune.py \
     --vla_path "openvla/openvla-7b" \
     --data_root_dir ~/tensorflow_datasets \
-    --dataset_name ur5e_vla_planner \
+    --dataset_name ur5e_vla_planner_10hz \
     --run_root_dir runs/ \
     --batch_size 16 \
     --learning_rate 5e-4
@@ -937,8 +986,8 @@ torchrun --standalone --nnodes 1 --nproc-per-node $K vla-scripts/finetune.py \
 | Parameter | Default | Notes |
 |-----------|---------|-------|
 | `--vla_path` | `openvla/openvla-7b` | HuggingFace model ID or local path |
-| `--dataset_name` | - | Must match TFDS builder name exactly |
-| `--data_root_dir` | `datasets/open-x-embodiment` | Directory containing `ur5e_vla_*/1.0.0/` |
+| `--dataset_name` | - | Must match TFDS builder name exactly (e.g., `ur5e_vla_planner_10hz`) |
+| `--data_root_dir` | `datasets/open-x-embodiment` | Directory containing `ur5e_vla_*_<fps>hz/1.0.0/` |
 | `--batch_size` | 16 | 12 max on 48 GB, 24 on 80 GB |
 | `--lora_rank` | 32 | Higher = more capacity, more VRAM |
 | `--use_lora` | True | Set False for full fine-tuning (80 GB+ required) |
@@ -980,7 +1029,7 @@ Same as OpenVLA — use `rsync` to transfer RLDS TFRecords to the server.
 torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
     --vla_path "openvla/openvla-7b" \
     --data_root_dir ~/tensorflow_datasets \
-    --dataset_name ur5e_vla_planner \
+    --dataset_name ur5e_vla_planner_10hz \
     --run_root_dir runs/ \
     --use_l1_regression True \
     --use_diffusion False \
@@ -999,7 +1048,7 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
 torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
     --vla_path "openvla/openvla-7b" \
     --data_root_dir ~/tensorflow_datasets \
-    --dataset_name ur5e_vla_planner \
+    --dataset_name ur5e_vla_planner_10hz \
     --run_root_dir runs/ \
     --use_l1_regression False \
     --use_diffusion True \
