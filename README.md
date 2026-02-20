@@ -490,13 +490,9 @@ CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
     --data-path data/vla_dataset \
     --fps 10
 
-# Convert planner at 10Hz with 224x224 images (for base OpenVLA; OFT uses 256)
-CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
-    --target planner \
-    --data-path data/vla_dataset \
-    --image-size 224 \
-    --fps 10
 ```
+
+The default `--image-size 256` works for both base OpenVLA and OFT — the training pipeline resizes images internally to match the model's vision backbone (224x224 for base OpenVLA's `dinosiglip-vit-so-224px`, 256x256 for OFT). You do not need separate datasets at different image sizes.
 
 > **TFDS Caching:** TFDS does not overwrite existing output. If you re-run conversion at a different `--fps` (or with different data), you must delete the existing dataset directory first:
 > ```bash
