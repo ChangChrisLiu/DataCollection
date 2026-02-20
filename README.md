@@ -373,18 +373,31 @@ Skill outcomes: `"completed"`, `"completed_after_correction"`, `"no_skill"`, `"i
 
 Raw `.pkl` episodes are converted to model-specific formats locally, then transferred to the training server. This avoids NumPy version compatibility issues since TFRecords and LeRobot datasets use version-agnostic serialization.
 
-### Conversion Pipeline
+### Conversion Scripts
+
+There are two entry-point scripts — one per output format. You only ever run these two files:
+
+| Script | Output Format | Used By | Output Location |
+|--------|--------------|---------|-----------------|
+| `scripts/convert_to_rlds.py` | RLDS TFRecords | OpenVLA, OpenVLA-OFT | `~/tensorflow_datasets/ur5e_vla_<target>/` |
+| `scripts/convert_to_lerobot.py` | LeRobot v3 | OpenPI | HuggingFace Hub or local directory |
+
+Both scripts share the same processing logic from `scripts/conversion_utils.py` (episode discovery, phase filtering, downsampling, no-op removal, trigger/stop signal synthesis).
+
+The RLDS script additionally depends on three small **TFDS builder modules** — `scripts/ur5e_vla_e2e/`, `scripts/ur5e_vla_planner/`, `scripts/ur5e_vla_correction/` — but you never run or touch these directly. They are ~20-line config files that each set flags (which phases to include, whether to add stop signals, etc.) and inherit all actual logic from `scripts/rlds_builder_base.py`. They exist as separate directories because the TFDS framework requires each dataset to be its own Python package. `convert_to_rlds.py` dynamically imports the correct builder based on `--target`.
 
 ```
-.pkl episodes (local)
-      │
-      ├──> RLDS TFRecords (for OpenVLA / OpenVLA-OFT)
-      │       scripts/convert_to_rlds.py
-      │       └── ~/tensorflow_datasets/ur5e_vla_<target>/
-      │
-      └──> LeRobot v3 datasets (for OpenPI)
-              scripts/convert_to_lerobot.py
-              └── HuggingFace Hub: ChangChrisLiu/ur5e_<target>
+scripts/
+├── convert_to_rlds.py          ← run this for RLDS
+│     └── imports builder from:
+│         ├── ur5e_vla_e2e/         (PHASE_FILTER=all, no stop signal)
+│         ├── ur5e_vla_planner/     (PHASE_FILTER=teleop, stop+trigger)
+│         └── ur5e_vla_correction/  (PHASE_FILTER=correction, stop+trigger+near-grasp)
+│               └── all inherit from rlds_builder_base.py (schema + processing)
+│
+├── convert_to_lerobot.py       ← run this for LeRobot (self-contained)
+│
+└── conversion_utils.py         ← shared utilities (used by both)
 ```
 
 Both conversion scripts accept two key arguments:
@@ -424,7 +437,7 @@ The trigger signal (step 3) marks the moment the human finished the approach. It
 
 ### RLDS Conversion (OpenVLA / OpenVLA-OFT)
 
-Uses TFDS `GeneratorBasedBuilder` following the [kpertsch/rlds_dataset_builder](https://github.com/kpertsch/rlds_dataset_builder) template. Three builder modules in `scripts/`, one per target:
+Per-target settings (set in each builder module, inherited from `rlds_builder_base.py`):
 
 | Target | Builder Name | Phase Filter | No-op Removal | Trigger Amp | Stop Signal |
 |--------|-------------|-------------|---------------|-------------|-------------|
@@ -462,22 +475,22 @@ language_embedding:         (512,)        float32  Universal Sentence Encoder
 - `action_gripper`: next frame's normalized gripper position (same convention). For trigger/stop signal frames: always 1.0 (closed)
 - `action`: delta from current frame to next frame. For trigger/stop/last frames: zeros
 
-**Build commands:**
+**Commands:**
 
 ```bash
-# Build the planner dataset (teleop approach only) at full 30Hz
+# Convert planner dataset (teleop approach only) at full 30Hz
 # CUDA_VISIBLE_DEVICES="" avoids TF GPU errors on unsupported GPUs (see Known Issues)
 CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
     --target planner \
     --data-path data/vla_dataset
 
-# Build all three datasets (e2e + planner + correction) at 10Hz output
+# Convert all three targets at 10Hz output
 CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
     --target all \
     --data-path data/vla_dataset \
     --fps 10
 
-# Build planner at 10Hz with 224x224 images (for base OpenVLA; OFT uses 256)
+# Convert planner at 10Hz with 224x224 images (for base OpenVLA; OFT uses 256)
 CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
     --target planner \
     --data-path data/vla_dataset \
@@ -485,7 +498,7 @@ CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
     --fps 10
 ```
 
-> **TFDS Caching:** TFDS does not overwrite existing builds. If you rebuild a dataset at a different `--fps` (or with different data), you must delete the existing dataset directory first:
+> **TFDS Caching:** TFDS does not overwrite existing output. If you re-run conversion at a different `--fps` (or with different data), you must delete the existing dataset directory first:
 > ```bash
 > rm -rf ~/tensorflow_datasets/ur5e_vla_planner/
 > python scripts/convert_to_rlds.py --target planner --data-path data/vla_dataset --fps 10
@@ -746,13 +759,13 @@ Features:
 │   └── env.py                        # RobotEnv (rate-limited step loop)
 ├── scripts/                          # Conversion & calibration
 │   ├── calibrate_cameras.py          # Camera settings auto-detect/manual
-│   ├── conversion_utils.py           # Shared conversion utilities
-│   ├── rlds_builder_base.py          # Shared TFDS GeneratorBasedBuilder base
-│   ├── ur5e_vla_e2e/                 # RLDS builder: end-to-end
-│   ├── ur5e_vla_planner/             # RLDS builder: planner
-│   ├── ur5e_vla_correction/          # RLDS builder: correction
-│   ├── convert_to_rlds.py            # RLDS conversion wrapper
-│   ├── convert_to_lerobot.py         # LeRobot conversion
+│   ├── convert_to_rlds.py            # ENTRY POINT: .pkl → RLDS TFRecords
+│   ├── convert_to_lerobot.py         # ENTRY POINT: .pkl → LeRobot v3
+│   ├── conversion_utils.py           # Shared utilities (both scripts use this)
+│   ├── rlds_builder_base.py          # TFDS builder base class (schema + processing)
+│   ├── ur5e_vla_e2e/                 # TFDS builder config: e2e target (all phases)
+│   ├── ur5e_vla_planner/             # TFDS builder config: planner target (teleop only)
+│   ├── ur5e_vla_correction/          # TFDS builder config: correction target
 │   └── test_dual_camera.py           # Camera connectivity test
 ├── configs/                          # Generated config files
 │   └── camera_settings.json          # Saved camera parameters
