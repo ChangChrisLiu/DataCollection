@@ -30,8 +30,8 @@ Stop signals (3 copies of last frame with gripper=255) are **not stored** in raw
 |-----------|-------|------------|
 | Robot | UR5e | RTDE at `10.125.144.209` |
 | Gripper | Robotiq 2F-85 | Socket port 63352 (positions 0-255) |
-| Wrist Camera | Intel RealSense D435i | USB, 1280x720 @ 30Hz (RGB + aligned depth) |
-| Base Camera | Luxonis OAK-D Pro | USB, 1280x720 @ 30Hz (RGB + aligned depth) |
+| Wrist Camera | Intel RealSense D435i | USB, 1280x720 @ 30Hz (RGB) |
+| Base Camera | Luxonis OAK-D Pro | USB, 1280x720 @ 30Hz (RGB) |
 | Controller | Thrustmaster SOL-R2 HOSAS | USB, dual flight sticks |
 
 ## Architecture
