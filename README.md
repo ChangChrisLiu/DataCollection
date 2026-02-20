@@ -402,7 +402,7 @@ scripts/
 
 Both conversion scripts accept two key arguments:
 
-- **`--target`** selects which dataset to build (`e2e`, `planner`, or `correction`). Each target filters different phases from the raw recording and applies different post-processing (see table above). The RLDS script also accepts `all` to build all three targets in one run; LeRobot must be run separately per target.
+- **`--target`** selects which dataset to convert (`e2e`, `planner`, or `correction`). Each target filters different phases from the raw recording and applies different post-processing (see table above). The RLDS script also accepts `all` to run all three targets in sequence, producing three separate datasets (`ur5e_vla_e2e`, `ur5e_vla_planner`, `ur5e_vla_correction`); LeRobot must be run separately per target. Note: `--target all` means "all targets", not "all phases" — the target that includes all *phases* is `e2e`.
 - **`--fps`** sets the **output frame rate** of the training dataset (5, 10, 15, or 30 Hz). Raw data is always recorded at 30Hz. Lower FPS means fewer frames per episode, which reduces dataset size and speeds up training. For example, `--fps 10` keeps every 3rd frame. Default is 30 (no downsampling).
 
 During conversion, the following processing is applied **in this order** (ordering matters):
