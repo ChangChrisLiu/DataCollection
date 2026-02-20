@@ -389,17 +389,21 @@ Raw `.pkl` episodes are converted to model-specific formats locally, then transf
 
 Both conversion scripts accept two key arguments:
 
-- **`--target`** selects which dataset to build (`e2e`, `planner`, `correction`, or `all`). Each target filters different phases from the raw recording and applies different post-processing (see table above).
+- **`--target`** selects which dataset to build (`e2e`, `planner`, or `correction`). Each target filters different phases from the raw recording and applies different post-processing (see table above). The RLDS script also accepts `all` to build all three targets in one run; LeRobot must be run separately per target.
 - **`--fps`** sets the **output frame rate** of the training dataset (5, 10, 15, or 30 Hz). Raw data is always recorded at 30Hz. Lower FPS means fewer frames per episode, which reduces dataset size and speeds up training. For example, `--fps 10` keeps every 3rd frame. Default is 30 (no downsampling).
 
 During conversion, the following processing is applied **in this order** (ordering matters):
 
 1. **Phase filtering** — select frames matching the target's phase set
 2. **Downsampling** — reduce from 30Hz to the output FPS set by `--fps`
-3. **Trigger signal amplification** — preserve and repeat the last ~0.5s of frames (planner/correction targets) OR **no-op frame removal** (e2e target)
+3. **No-op frame removal + trigger signal amplification** — differs by target:
+   - **planner/correction**: split frames into body + tail (~0.5s). Remove no-op frames from the body only, then repeat the preserved tail as a trigger signal
+   - **e2e**: remove no-op frames from the entire episode (no tail preservation, no trigger signal)
 4. **Stop signal synthesis** — 3 copies of last frame with gripper=255 (planner/correction targets only)
-5. **Action computation** — delta EEF for RLDS, absolute joints for LeRobot
+5. **Action computation** — delta EEF for RLDS, absolute next-step joints for LeRobot
 6. **Image resizing** — 256x256 for RLDS (configurable)
+
+No-op removal (step 3) drops consecutive frames where all joint positions changed by less than 1e-4 radians — i.e. the robot wasn't moving. This is applied to **all three targets**, but for planner/correction the last ~0.5s (the "tail") is protected from removal because those frames carry the trigger signal.
 
 The trigger signal (step 3) marks the moment the human finished the approach. Its frame count scales with `--fps` to maintain ~0.5 seconds of real time:
 
@@ -416,26 +420,26 @@ The trigger signal (step 3) marks the moment the human finished the approach. It
 
 **Episode discovery** recurses into subdirectories (`CPU_Extraction/`, `RAM_Extraction/`) and produces a single merged dataset containing both CPU and RAM episodes.
 
-> **Important:** Phase filtering happens **before** downsampling so each phase has consistent sampling. Downsampling happens **before** cleaning because at lower FPS, per-frame deltas are larger and the no-op threshold naturally catches fewer frames.
+> **Important:** Phase filtering happens **before** downsampling so each phase has consistent sampling. Downsampling happens **before** no-op removal because at lower FPS, per-frame deltas are larger and the joint-threshold (1e-4 rad) naturally catches fewer frames.
 
 ### RLDS Conversion (OpenVLA / OpenVLA-OFT)
 
 Uses TFDS `GeneratorBasedBuilder` following the [kpertsch/rlds_dataset_builder](https://github.com/kpertsch/rlds_dataset_builder) template. Three builder modules in `scripts/`, one per target:
 
-| Target | Builder Name | Phase Filter | Stop Signal | Trigger Amp |
-|--------|-------------|-------------|-------------|-------------|
-| `e2e` | `ur5e_vla_e2e` | all phases | no | no |
-| `planner` | `ur5e_vla_planner` | teleop only | yes (3 frames) | yes |
-| `correction` | `ur5e_vla_correction` | correction only | yes (3 frames) | yes |
+| Target | Builder Name | Phase Filter | No-op Removal | Trigger Amp | Stop Signal |
+|--------|-------------|-------------|---------------|-------------|-------------|
+| `e2e` | `ur5e_vla_e2e` | all phases | entire episode | no | no |
+| `planner` | `ur5e_vla_planner` | teleop only | body only (tail preserved) | yes | yes (3 frames) |
+| `correction` | `ur5e_vla_correction` | correction only | body only (tail preserved) | yes | yes (3 frames) |
 
 All three inherit from `scripts/rlds_builder_base.py` which defines the shared RLDS schema. State and actions use **EEF (end-effector) coordinates with Euler RPY angles**, not joint angles.
 
 **E2E target notes:**
 - Includes all 4 phases as a single continuous trajectory (no phase boundary markers)
 - Actions (delta EEF) are smooth across phase boundaries because the robot state is physically continuous
-- No-op frames removed globally (unlike planner/correction which preserve the tail)
+- No-op frames removed from the entire episode (no tail preservation, no trigger signal)
 - Intended for training a policy that learns the entire task autonomously — the model must learn from visual context when to transition between approach, grasp, and transfer behaviors
-- Episodes that included correction (grasp failed then recovered) are labeled `success=True` if eventually completed — the planner target trains on the initial (potentially bad) approach from these episodes
+- Episodes that included correction (grasp failed then recovered) are labeled `success=True` if eventually completed — the planner target also trains on the initial (potentially bad) approach from these episodes
 
 **Correction target** additionally extracts **near-grasp segments** from successful episodes (no correction phase) as supplementary training data. These segments cover the critical approach/extract/lift window of each skill:
 - **CPU**: 19.8s–22.2s after skill start
@@ -449,27 +453,32 @@ observation.image:          (N, N, 3)     uint8    Base camera RGB (JPEG)
 observation.wrist_image:    (N, N, 3)     uint8    Wrist camera RGB (JPEG)
 observation.state:          (8,)          float32  [x, y, z, roll, pitch, yaw, 0.0, gripper_0to1]
 action:                     (6,)          float32  Delta EEF [dx, dy, dz, droll, dpitch, dyaw]
-action_gripper:             (1,)          float32  Gripper position 0-1
+action_gripper:             (1,)          float32  Next frame's gripper (0=open, 1=closed)
 language_instruction:       string                 Task description (auto-detected per episode)
 language_embedding:         (512,)        float32  Universal Sentence Encoder
 ```
+
+- `observation.state[7]` (gripper): current frame's normalized gripper position (0.0=open, 1.0=closed, robot convention)
+- `action_gripper`: next frame's normalized gripper position (same convention). For trigger/stop signal frames: always 1.0 (closed)
+- `action`: delta from current frame to next frame. For trigger/stop/last frames: zeros
 
 **Build commands:**
 
 ```bash
 # Build the planner dataset (teleop approach only) at full 30Hz
-python scripts/convert_to_rlds.py \
+# CUDA_VISIBLE_DEVICES="" avoids TF GPU errors on unsupported GPUs (see Known Issues)
+CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
     --target planner \
     --data-path data/vla_dataset
 
 # Build all three datasets (e2e + planner + correction) at 10Hz output
-python scripts/convert_to_rlds.py \
+CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
     --target all \
     --data-path data/vla_dataset \
     --fps 10
 
 # Build planner at 10Hz with 224x224 images (for base OpenVLA; OFT uses 256)
-python scripts/convert_to_rlds.py \
+CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
     --target planner \
     --data-path data/vla_dataset \
     --image-size 224 \
@@ -537,6 +546,10 @@ action:                         (7,)          float32  [q0_next..q5_next, grippe
 task:                           string                 Language instruction (auto-detected from path)
 ```
 
+- `observation.state[6]` (gripper): current frame's normalized gripper (0.0=open, 1.0=closed, robot convention — no inversion)
+- `action[0:6]`: next frame's absolute joint positions (not deltas — OpenPI's `DeltaActions` converts to deltas during training)
+- `action[6]`: next frame's normalized gripper. For trigger/stop/last frames: 1.0 (closed)
+
 Options:
 | Flag | Description |
 |------|-------------|
@@ -602,7 +615,7 @@ def ur5e_disassembly_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, 
     return trajectory
 ```
 
-This takes the 6D delta EEF action from RLDS, reads the gripper position from the observation state (last element, same position for both joint and EEF state), inverts it (OpenVLA convention: 1=open, 0=closed), and produces the final 7D action vector.
+This produces a 7D action: `[dx, dy, dz, droll, dpitch, dyaw, gripper_inverted]`. It takes the 6D delta EEF action from RLDS, reads the **current frame's** gripper from `observation.state[-1]` (0=open, 1=closed), inverts it to match the OpenVLA convention (1=open, 0=closed), and concatenates. Note: it uses the current state's gripper, not `action_gripper` (next frame's gripper) — this is consistent with how other datasets are handled in the OXE pipeline.
 
 #### Step 3: Place TFRecord Files
 
@@ -865,9 +878,9 @@ pip install peft==0.11.1
 #### A.1 Transfer RLDS Data
 
 ```bash
-# On the collection machine (local) — language auto-detected per episode
-python scripts/convert_to_rlds.py \
-    --target planner \
+# On the collection machine (local) — build all three targets at 10Hz
+CUDA_VISIBLE_DEVICES="" python scripts/convert_to_rlds.py \
+    --target all \
     --data-path data/vla_dataset \
     --fps 10
 
