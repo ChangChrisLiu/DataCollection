@@ -84,17 +84,34 @@ scp -r $LOCAL_OPENPI/assets/pi0_ur5e_lora \
 
 ## Step 2: Set Environment Variables
 
-Add to your `~/.bashrc`:
+Add to your `~/.bashrc` on GRACE:
 
 ```bash
-# OpenPI environment (add to ~/.bashrc)
+# OpenPI environment (add to ~/.bashrc on GRACE)
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+
+# CRITICAL: skip uv dependency re-resolution (avoids dlimp/tensorflow conflict)
+export UV_FROZEN=1
+
+# Wandb logging (v1 key format — must use env var, `wandb login` rejects v1 keys)
+export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 ```
 
 Then: `source ~/.bashrc`
+
+**Why each line matters:**
+
+| Variable | What It Fixes |
+|----------|--------------|
+| `UV_CACHE_DIR` | Points uv to scratch storage (home quota is small) |
+| `HF_LEROBOT_HOME` | Must be PARENT of `ChangChrisLiu/` — OpenPI looks for `$HF_LEROBOT_HOME/ChangChrisLiu/ur5e_*` |
+| `OPENPI_DATA_HOME` | Model checkpoint download cache (10+ GB per model) |
+| `XLA_PYTHON_CLIENT_MEM_FRACTION` | JAX pre-allocates GPU memory; 0.9 = use 90% |
+| `UV_FROZEN=1` | Without this, `uv run` tries to re-resolve deps and hits `dlimp`/`tensorflow` conflict (Python 3.13+macOS markers even on Linux 3.11) |
+| `WANDB_API_KEY` | Wandb v1 keys are 86 chars; `wandb login` CLI rejects anything != 40 chars. Env var bypasses validation |
 
 ---
 

@@ -1221,12 +1221,17 @@ Then deploy the UR5e custom files from `DataCollection/openpi_configs/` (see the
 
 **Environment variables** (add to `~/.bashrc`):
 ```bash
-export HF_LEROBOT_HOME=~/lerobot_datasets       # Dataset location
-export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9        # GPU memory allocation
-export WANDB_API_KEY="<your-key>"                # Wandb v1 key (must use env var, not `wandb login`)
+# CUDA toolkit
+export PATH=/usr/local/cuda-13.0/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:$LD_LIBRARY_PATH
 
-# NVIDIA libs from uv cache (fixes: ImportError: libcudnn.so.9)
+# OpenPI uv venv nvidia libs (cudnn, nccl, cublas — fixes: ImportError: libcudnn.so.9)
 export LD_LIBRARY_PATH="$(find ~/.cache/uv/archive-v0/ -maxdepth 4 -path '*/nvidia/*/lib' -type d 2>/dev/null | grep -v triton | grep -v tensorflow | tr '\n' ':')$LD_LIBRARY_PATH"
+
+# Dataset location, GPU memory, wandb
+export HF_LEROBOT_HOME=~/lerobot_datasets
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+export WANDB_API_KEY="<your-key>"                # v1 key — must use env var, `wandb login` rejects v1 format
 ```
 
 Model weights and assets are cached at `~/openpi_data/` (configurable via `OPENPI_DATA_HOME`).

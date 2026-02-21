@@ -47,20 +47,35 @@ ls ~/lerobot_datasets/ChangChrisLiu/ur5e_correction_10hz/
 Add these to `~/.bashrc` if not already present:
 
 ```bash
-# LeRobot datasets
+# CUDA 13.0 (must be on PATH for JAX/XLA to find nvcc and libs)
+export PATH=/usr/local/cuda-13.0/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:$LD_LIBRARY_PATH
+
+# OpenPI uv venv nvidia libs (cudnn, nccl, cublas, etc.)
+# Fixes: ImportError: libcudnn.so.9: cannot open shared object file
+export LD_LIBRARY_PATH="$(find ~/.cache/uv/archive-v0/ -maxdepth 4 -path '*/nvidia/*/lib' -type d 2>/dev/null | grep -v triton | grep -v tensorflow | tr '\n' ':')$LD_LIBRARY_PATH"
+
+# LeRobot dataset location (OpenPI reads from here)
 export HF_LEROBOT_HOME="$HOME/lerobot_datasets"
 
-# JAX GPU memory
+# JAX GPU memory — allow 90% of VRAM (prevents OOM on 24GB cards)
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
-# Wandb API key (v1 format — must use env var, `wandb login` rejects v1 keys)
+# Wandb logging (v1 key format — must use env var, `wandb login` rejects v1 keys)
 export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
-
-# NVIDIA libs from uv cache (fixes: ImportError: libcudnn.so.9)
-export LD_LIBRARY_PATH="$(find ~/.cache/uv/archive-v0/ -maxdepth 4 -path '*/nvidia/*/lib' -type d 2>/dev/null | grep -v triton | grep -v tensorflow | tr '\n' ':')$LD_LIBRARY_PATH"
 ```
 
 Then: `source ~/.bashrc`
+
+**Why each line matters:**
+
+| Variable | What It Fixes |
+|----------|--------------|
+| `PATH` + `LD_LIBRARY_PATH` (cuda-13.0) | JAX/XLA needs CUDA toolkit on PATH |
+| `LD_LIBRARY_PATH` (uv nvidia libs) | `ImportError: libcudnn.so.9` — uv installs nvidia wheels in its cache, not on system LD path |
+| `HF_LEROBOT_HOME` | OpenPI looks for datasets at `$HF_LEROBOT_HOME/ChangChrisLiu/ur5e_*` |
+| `XLA_PYTHON_CLIENT_MEM_FRACTION` | Without this, JAX pre-allocates only ~75% VRAM → OOM on large batches |
+| `WANDB_API_KEY` | Wandb v1 keys are 86 chars; `wandb login` CLI rejects anything != 40 chars. Env var bypasses validation |
 
 ## A.3 Run Training (One at a Time)
 
@@ -102,16 +117,14 @@ After 30k steps complete, if loss is still decreasing:
 ```bash
 # Resume planner from 30k to 50k (NO --overwrite, same --exp-name)
 cd ~/openpi
-HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
-    --exp-name planner_v1 \
-    --project-name ur5e-finetuning \
-    --num-train-steps 50000
+uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz --exp-name planner_v1 --project-name ur5e-finetuning --num-train-steps 50000
 ```
 
 You can also stop with Ctrl+C mid-training and resume later with the same command (no `--overwrite`). It picks up from the latest saved checkpoint.
 
 **Key rule**: `--overwrite` = delete old checkpoints, start fresh. No `--overwrite` = resume from latest.
+
+**Important**: All env vars (`HF_LEROBOT_HOME`, `XLA_PYTHON_CLIENT_MEM_FRACTION`, etc.) are set in `~/.bashrc` from Step A.2. Do NOT use inline env vars on the command line — they break when pasting.
 
 ## A.6 Checkpoints
 
@@ -327,9 +340,12 @@ Runs from local and GRACE appear side-by-side. Use wandb run names (`planner_v1`
 
 | Issue | Fix |
 |-------|-----|
-| **Local**: OOM on RTX 5090 | `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9`, or `--batch-size 16` |
+| **Local**: `ImportError: libcudnn.so.9` | `LD_LIBRARY_PATH` not set — add the uv nvidia libs line to `~/.bashrc` (see A.2) |
+| **Local**: OOM on RTX 5090 | `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9` in `~/.bashrc`, or `--batch-size 16` |
 | **Local**: `ModuleNotFoundError` | Must run from `cd ~/openpi` |
 | **Local**: Slow first run | Downloads ~10 GB base checkpoint from GCS (one-time) |
+| **Local**: Multi-line `\` commands fail | Terminal paste breaks multi-line. Use single-line commands (see A.3) |
+| **Local**: Inline env vars fail | Don't use `VAR=val command`. Export in `~/.bashrc` instead (see A.2) |
 | **GRACE**: `uv` resolution error | `export UV_FROZEN=1` |
 | **GRACE**: `Unable to initialize backend 'cuda'` | Not on GPU node — use `srun --gres=gpu:1` or `sbatch` |
 | **GRACE**: `FileNotFoundError` for dataset | `HF_LEROBOT_HOME` must be `/scratch/user/changliu.chris` (parent of `ChangChrisLiu/`) |
