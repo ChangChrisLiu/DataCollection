@@ -42,75 +42,51 @@ ls ~/lerobot_datasets/ChangChrisLiu/ur5e_e2e_10hz/
 ls ~/lerobot_datasets/ChangChrisLiu/ur5e_correction_10hz/
 ```
 
-## A.2 Set Wandb Key
+## A.2 Environment Setup (One-Time)
 
-Add to `~/.bashrc` (one-time):
+Add these to `~/.bashrc` if not already present:
 
 ```bash
-echo 'export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"' >> ~/.bashrc
-source ~/.bashrc
+# LeRobot datasets
+export HF_LEROBOT_HOME="$HOME/lerobot_datasets"
+
+# JAX GPU memory
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+
+# Wandb API key (v1 format — must use env var, `wandb login` rejects v1 keys)
+export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
+
+# NVIDIA libs from uv cache (fixes: ImportError: libcudnn.so.9)
+export LD_LIBRARY_PATH="$(find ~/.cache/uv/archive-v0/ -maxdepth 4 -path '*/nvidia/*/lib' -type d 2>/dev/null | grep -v triton | grep -v tensorflow | tr '\n' ':')$LD_LIBRARY_PATH"
 ```
+
+Then: `source ~/.bashrc`
 
 ## A.3 Run Training (One at a Time)
 
-Open a terminal and run each config sequentially. You can Ctrl+C at any time — checkpoints are saved every 1,000 steps.
+Open a terminal and run each config sequentially. Ctrl+C anytime — checkpoints saved every 1,000 steps.
+
+**Important**: Do NOT use inline env vars or multi-line `\` continuations when pasting into terminal — they break. The env vars are set in `~/.bashrc` above.
 
 ### Run 1: Planner
 
 ```bash
 cd ~/openpi
-HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
-    --exp-name planner_v1 \
-    --project-name ur5e-finetuning \
-    --num-train-steps 30000 \
-    --overwrite
+uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz --exp-name planner_v1 --project-name ur5e-finetuning --num-train-steps 30000 --overwrite
 ```
 
 ### Run 2: End-to-End
 
 ```bash
 cd ~/openpi
-HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-uv run scripts/train.py pi05_droid_ur5e_e2e_lora_10hz \
-    --exp-name e2e_v1 \
-    --project-name ur5e-finetuning \
-    --num-train-steps 30000 \
-    --overwrite
+uv run scripts/train.py pi05_droid_ur5e_e2e_lora_10hz --exp-name e2e_v1 --project-name ur5e-finetuning --num-train-steps 30000 --overwrite
 ```
 
 ### Run 3: Correction
 
 ```bash
 cd ~/openpi
-HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-uv run scripts/train.py pi05_droid_ur5e_correction_lora_10hz \
-    --exp-name correction_v1 \
-    --project-name ur5e-finetuning \
-    --num-train-steps 30000 \
-    --overwrite
-```
-
-### Or: Run All 3 in One Command
-
-```bash
-cd ~/openpi
-for CONFIG_EXP in \
-    "pi05_droid_ur5e_planner_lora_10hz planner_v1" \
-    "pi05_droid_ur5e_e2e_lora_10hz e2e_v1" \
-    "pi05_droid_ur5e_correction_lora_10hz correction_v1"; do
-    CONFIG=$(echo $CONFIG_EXP | cut -d' ' -f1)
-    EXP=$(echo $CONFIG_EXP | cut -d' ' -f2)
-    echo "========================================"
-    echo "Training: $CONFIG ($EXP) — $(date)"
-    echo "========================================"
-    HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-    uv run scripts/train.py $CONFIG \
-        --exp-name $EXP \
-        --project-name ur5e-finetuning \
-        --num-train-steps 30000 \
-        --overwrite
-done
+uv run scripts/train.py pi05_droid_ur5e_correction_lora_10hz --exp-name correction_v1 --project-name ur5e-finetuning --num-train-steps 30000 --overwrite
 ```
 
 ## A.4 Monitor

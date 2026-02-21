@@ -1219,10 +1219,14 @@ Then deploy the UR5e custom files from `DataCollection/openpi_configs/` (see the
 - RTX 5090 (compute 12.0) is supported by JAX 0.4.38+ / jaxlib 0.5.3+
 - 22.5 GB+ VRAM for LoRA fine-tuning
 
-**Environment variables** (set before any OpenPI command):
+**Environment variables** (add to `~/.bashrc`):
 ```bash
 export HF_LEROBOT_HOME=~/lerobot_datasets       # Dataset location
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9        # GPU memory allocation
+export WANDB_API_KEY="<your-key>"                # Wandb v1 key (must use env var, not `wandb login`)
+
+# NVIDIA libs from uv cache (fixes: ImportError: libcudnn.so.9)
+export LD_LIBRARY_PATH="$(find ~/.cache/uv/archive-v0/ -maxdepth 4 -path '*/nvidia/*/lib' -type d 2>/dev/null | grep -v triton | grep -v tensorflow | tr '\n' ':')$LD_LIBRARY_PATH"
 ```
 
 Model weights and assets are cached at `~/openpi_data/` (configurable via `OPENPI_DATA_HOME`).
