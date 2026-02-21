@@ -12,6 +12,30 @@ Complete step-by-step instructions for deploying UR5e configs on the TAMU HPRC G
 - 6 LeRobot datasets uploaded to `$SCRATCH/ChangChrisLiu/`
 - UV cache set: `export UV_CACHE_DIR=$SCRATCH/.cache/uv`
 
+## Step 0: Update Server OpenPI to Latest Upstream
+
+The server's OpenPI clone may be older than your local copy. Our custom `config.py` is built on the latest upstream and imports modules (e.g. `polaris_config`, `roboarena_config`) that only exist in recent commits. **You must update before uploading custom files.**
+
+```bash
+cd $SCRATCH/openpi
+
+# Pull latest upstream (safe — you haven't committed custom changes on server)
+git pull origin main
+
+# Re-sync dependencies (frozen = skip resolution, just install from lockfile)
+export UV_FROZEN=1
+uv sync
+```
+
+If `git pull` fails due to local changes on the server:
+```bash
+git stash          # save local edits
+git pull origin main
+git stash pop      # re-apply (conflicts on config.py are expected — we overwrite it in Step 1)
+```
+
+If `git stash pop` has conflicts, don't worry — Step 1 overwrites `config.py` and `download.py` entirely.
+
 ## Important: Fix Your HF_LEROBOT_HOME Path
 
 **Issue 1**: `~` expands to your HOME (`/home/changliu.chris`), not scratch. `~/scratch/...` is WRONG.
@@ -34,7 +58,7 @@ ls $HF_LEROBOT_HOME/ChangChrisLiu/ur5e_planner_10hz/
 
 ## Step 1: Upload Files from Local Machine
 
-You need to upload **6 files + 4 asset dirs** from your local machine. Run `scp` from your **local terminal**:
+After `git pull` (Step 0), upload the **4 custom files + 4 asset dirs** from your local machine. Run `scp` from your **local terminal**:
 
 ```bash
 # ---- Run on LOCAL machine ----
@@ -42,29 +66,23 @@ LOCAL_OPENPI=~/openpi
 SERVER=changliu.chris@grace.hprc.tamu.edu
 REMOTE_OPENPI=/scratch/user/changliu.chris/openpi
 
-# 1. UR5e policy file (NEW)
+# 1. UR5e policy file (NEW — does not exist upstream)
 scp $LOCAL_OPENPI/src/openpi/policies/ur5e_policy.py \
     $SERVER:$REMOTE_OPENPI/src/openpi/policies/ur5e_policy.py
 
-# 2. Modified config.py (REPLACES upstream — adds 52 UR5e configs)
+# 2. Modified config.py (OVERWRITES upstream — adds 52 UR5e configs)
 scp $LOCAL_OPENPI/src/openpi/training/config.py \
     $SERVER:$REMOTE_OPENPI/src/openpi/training/config.py
 
-# 3. Misc config modules (config.py imports these — server may not have them)
-ssh $SERVER "mkdir -p $REMOTE_OPENPI/src/openpi/training/misc"
-scp $LOCAL_OPENPI/src/openpi/training/misc/polaris_config.py \
-    $LOCAL_OPENPI/src/openpi/training/misc/roboarena_config.py \
-    $SERVER:$REMOTE_OPENPI/src/openpi/training/misc/
-
-# 4. Modified download.py (REPLACES upstream — changes default cache dir)
+# 3. Modified download.py (OVERWRITES upstream — changes default cache dir)
 scp $LOCAL_OPENPI/src/openpi/shared/download.py \
     $SERVER:$REMOTE_OPENPI/src/openpi/shared/download.py
 
-# 5. Norm stats computation script (NEW)
+# 4. Norm stats computation script (NEW)
 scp $LOCAL_OPENPI/scripts/compute_all_ur5e_norm_stats.sh \
     $SERVER:$REMOTE_OPENPI/scripts/compute_all_ur5e_norm_stats.sh
 
-# 6. Pre-computed norm stats (4 dirs, ~16KB each)
+# 5. Pre-computed norm stats (4 dirs, ~16KB each)
 scp -r $LOCAL_OPENPI/assets/pi05_droid_ur5e_planner_lora_10hz \
     $SERVER:$REMOTE_OPENPI/assets/
 scp -r $LOCAL_OPENPI/assets/pi05_droid_ur5e_e2e_lora_10hz \
@@ -75,14 +93,14 @@ scp -r $LOCAL_OPENPI/assets/pi0_ur5e_lora \
     $SERVER:$REMOTE_OPENPI/assets/
 ```
 
+**Note**: `misc/polaris_config.py` and `roboarena_config.py` are upstream files — `git pull` in Step 0 brings them in. No need to upload separately.
+
 **What each file does:**
 
 | File | Type | Purpose |
 |------|------|---------|
 | `src/openpi/policies/ur5e_policy.py` | NEW | UR5e input/output transforms (maps observations to model format) |
 | `src/openpi/training/config.py` | MODIFIED | 52 UR5e TrainConfig entries + LeRobotUR5eDataConfig class |
-| `src/openpi/training/misc/polaris_config.py` | MUST MATCH LOCAL | config.py imports this — server version may be outdated |
-| `src/openpi/training/misc/roboarena_config.py` | MUST MATCH LOCAL | config.py imports this — server version may be outdated |
 | `src/openpi/shared/download.py` | MODIFIED | DEFAULT_CACHE_DIR changed to `~/openpi_data` |
 | `scripts/compute_all_ur5e_norm_stats.sh` | NEW | Batch script to compute all norm stats |
 | `assets/pi05_droid_ur5e_*_lora_10hz/` | NEW | 3 pre-computed norm stats (Pi0.5-DROID x 10hz) |
@@ -487,7 +505,7 @@ pi0_ur5e, pi0_ur5e_lora, pi0_fast_ur5e, pi0_fast_ur5e_lora
 |-------|----------|
 | `FileNotFoundError: ChangChrisLiu/ur5e_*` | `HF_LEROBOT_HOME` must point to PARENT of `ChangChrisLiu/` — should be `/scratch/user/changliu.chris` |
 | `ModuleNotFoundError: openpi.policies.ur5e_policy` | `ur5e_policy.py` not uploaded to `src/openpi/policies/` |
-| `ModuleNotFoundError: openpi.training.misc.polaris_config` | Upload `misc/polaris_config.py` + `roboarena_config.py` from local (Step 1 item #3) |
+| `ModuleNotFoundError: openpi.training.misc.polaris_config` | Server OpenPI is outdated — run `git pull origin main` (Step 0) |
 | `uv` dependency resolution error (dlimp/tensorflow) | `export UV_FROZEN=1` — skips re-resolution |
 | `Config 'xxx' not found` | `config.py` not updated — re-upload from local |
 | `No norm stats found` | Run `compute_norm_stats.py` for that config, or create symlink |
@@ -505,7 +523,8 @@ pi0_ur5e, pi0_ur5e_lora, pi0_fast_ur5e, pi0_fast_ur5e_lora
 ## Execution Order Summary
 
 ```
-1. scp 4 files + 4 asset dirs from local -> server     (Step 1)
+0. git pull origin main + uv sync on server             (Step 0)
+1. scp 4 custom files + 4 asset dirs from local         (Step 1)
 2. Set environment variables in ~/.bashrc               (Step 2)
 3. Verify upload: Python import test on login node      (Step 3)
 4. Submit norm stats SLURM job                          (Step 4)

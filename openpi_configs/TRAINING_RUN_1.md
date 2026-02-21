@@ -173,7 +173,8 @@ actions = result["actions"]  # (10, 7) absolute joint positions
 
 Complete ALL steps in [`SERVER_SETUP_HPRC.md`](SERVER_SETUP_HPRC.md) first:
 
-1. Upload 6 files + 4 asset dirs from local `~/openpi/` to `$SCRATCH/openpi/` (includes `misc/` configs)
+0. `git pull origin main` + `uv sync` on server (brings in upstream deps like `misc/` configs)
+1. Upload 4 custom files + 4 asset dirs from local `~/openpi/` to `$SCRATCH/openpi/`
 2. Set environment variables in `~/.bashrc` (including `UV_FROZEN=1` and `WANDB_API_KEY`)
 3. Verify datasets at `$HF_LEROBOT_HOME/ChangChrisLiu/`
 4. Verify norm stats at `$SCRATCH/openpi/assets/`
