@@ -22,6 +22,9 @@ Usage (from OpenPI environment):
         --repo-id ChangChrisLiu/ur5e_planner \\
         --fps 10
 
+Datasets are saved to ~/lerobot_datasets/ by default. OpenPI training should
+set HF_LEROBOT_HOME=~/lerobot_datasets so LeRobot resolves datasets from there.
+
 OpenPI action format: ABSOLUTE next-step joint positions.
     action[t] = [joint_positions[t+1], gripper[t+1]/255]
     OpenPI's DeltaActions transform converts absolute -> delta during training.
@@ -35,10 +38,28 @@ Output schema (feature keys in LeRobot dataset):
 """
 
 import argparse
+import gc
 import sys
 from pathlib import Path
 
+from datasets import Dataset
 import numpy as np
+
+
+def _free_hf_dataset(dataset):
+    """Replace in-memory hf_dataset with an empty one to prevent OOM.
+
+    LeRobot's save_episode() concatenates every episode into hf_dataset,
+    but parquet files are already on disk. We keep an empty dataset with
+    the correct schema so subsequent save_episode() calls still work.
+    """
+    if hasattr(dataset, "hf_dataset") and dataset.hf_dataset is not None:
+        features = dataset.hf_dataset.features
+        cols = dataset.hf_dataset.column_names
+        dataset.hf_dataset = Dataset.from_dict(
+            {c: [] for c in cols}, features=features
+        )
+        gc.collect()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from conversion_utils import (
@@ -218,8 +239,8 @@ def main():
     parser.add_argument(
         "--root",
         type=str,
-        default=None,
-        help="Local output directory (default: ~/.cache/huggingface/lerobot/<repo-id>)",
+        default=str(Path.home() / "lerobot_datasets"),
+        help="Local output directory (default: ~/lerobot_datasets/)",
     )
     parser.add_argument(
         "--push-to-hub",
@@ -310,7 +331,10 @@ def main():
         "image_writer_threads": args.image_writer_threads,
     }
     if args.root:
-        create_kwargs["root"] = args.root
+        # LeRobot's create() uses root as-is (doesn't append repo_id).
+        # We mirror the HF_LEROBOT_HOME / repo_id convention so datasets
+        # land at e.g. ~/lerobot_datasets/ChangChrisLiu/ur5e_e2e_30hz/
+        create_kwargs["root"] = str(Path(args.root) / repo_id)
 
     dataset = LeRobotDataset.create(**create_kwargs)
 
@@ -359,6 +383,7 @@ def main():
                 print(
                     f"  Episode {idx}: {ep_path.name} [{skill_name}] -> {len(phase_frames)} frames"
                 )
+                _free_hf_dataset(dataset)
             else:
                 skipped += 1
         else:
@@ -386,6 +411,7 @@ def main():
                         print(
                             f"  Near-grasp {idx}: {ep_path.name} [{skill_name}] -> {len(ng_frames)} frames"
                         )
+                        _free_hf_dataset(dataset)
 
     # Finalize — required for LeRobot v3.0, not available in v2.1
     if hasattr(dataset, "finalize"):
@@ -409,7 +435,7 @@ def main():
     print(f"  State dim:          7 (6 joints + gripper)")
     print(f"  Action dim:         7 (6 joints + gripper, absolute next-step)")
     if args.root:
-        print(f"  Local path:         {args.root}")
+        print(f"  Local path:         {Path(args.root) / repo_id}")
     print()
 
     if args.push_to_hub:

@@ -380,7 +380,7 @@ There are two entry-point scripts — one per output format. You only ever run t
 | Script | Output Format | Used By | Output Location |
 |--------|--------------|---------|-----------------|
 | `scripts/convert_to_rlds.py` | RLDS TFRecords | OpenVLA, OpenVLA-OFT | `~/tensorflow_datasets/ur5e_vla_<target>_<fps>hz/` |
-| `scripts/convert_to_lerobot.py` | LeRobot v2.1 | OpenPI | `~/.cache/huggingface/lerobot/<repo-id>/` or local directory |
+| `scripts/convert_to_lerobot.py` | LeRobot v2.1 | OpenPI | `~/lerobot_datasets/<repo-id>/` |
 
 Both scripts share the same processing logic from `scripts/conversion_utils.py` (episode discovery, phase filtering, downsampling, no-op removal, trigger/stop signal synthesis).
 
@@ -556,21 +556,23 @@ Unlike RLDS, LeRobot uses **joint angles** (not EEF) for state and action. OpenP
 > **Critical: Use OpenPI's Python environment for conversion.** The `tele` conda env has LeRobot 0.4.3 (dataset format v3.0), but OpenPI uses LeRobot 0.1.0 (format v2.1). These formats are **not interchangeable** — v3.0 datasets cannot be loaded by OpenPI. Always run the conversion script with OpenPI's Python to produce v2.1-compatible datasets:
 
 ```bash
-# Build the planner dataset at 10Hz — using OpenPI's Python
+# Build the planner dataset at 30Hz — using OpenPI's Python
 cd /home/chris/DataCollection
 /home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
     --target planner \
     --data-dir data/vla_dataset \
-    --repo-id ChangChrisLiu/ur5e_planner \
-    --fps 10
+    --fps 30
 
-# Build the correction dataset at 10Hz
-/home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
-    --target correction \
-    --data-dir data/vla_dataset \
-    --repo-id ChangChrisLiu/ur5e_correction \
-    --fps 10
+# Build all three targets at 10Hz
+for target in e2e planner correction; do
+    /home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
+        --target $target \
+        --data-dir data/vla_dataset \
+        --fps 10
+done
 ```
+
+Datasets are saved to `~/lerobot_datasets/` by default (e.g. `~/lerobot_datasets/ChangChrisLiu/ur5e_planner_30hz/`). The repo ID auto-includes the FPS suffix: `ChangChrisLiu/ur5e_<target>_<fps>hz`. OpenPI training must set `HF_LEROBOT_HOME=~/lerobot_datasets` so LeRobot resolves datasets from this location instead of the default HuggingFace cache.
 
 Images are stored as **PNG embedded in parquet** (`dtype: "image"`), not as MP4 video. This is required for OpenPI compatibility — OpenPI's data loader reads `dtype: "image"` features as PIL images from parquet files. Using `dtype: "video"` would require MP4 files that OpenPI's LeRobot v2.1 cannot decode on all systems.
 
@@ -593,6 +595,7 @@ Options:
 | `--target` | Which dataset: `e2e`, `planner`, `correction` (correction also extracts near-grasp segments from successful episodes) |
 | `--fps` | Output frame rate: 5, 10, 15, or 30 Hz (default 30). Lower = fewer frames = faster training |
 | `--task` | Override auto-detected language instruction with a custom string |
+| `--root` | Output directory root (default: `~/lerobot_datasets/`). Dataset lands at `<root>/<repo-id>/` |
 | `--keep-noops` | Disable no-op frame removal (keep frames where the robot didn't move) |
 | `--push-to-hub` | Push finished dataset to HuggingFace Hub |
 
@@ -753,28 +756,25 @@ Both `Sibo/openvla/` and `Sibo/openvla-oft/` have these datasets already registe
 
 ### Dataset Registration (LeRobot / OpenPI Fine-Tuning)
 
-LeRobot datasets don't need code registration. The conversion script creates a self-contained dataset that is referenced by its HuggingFace repo ID:
+LeRobot datasets don't need code registration. The conversion script creates a self-contained dataset referenced by its HuggingFace repo ID. Datasets are saved to `~/lerobot_datasets/` by default:
 
-```bash
-# Convert and push to Hub — MUST use OpenPI's Python for v2.1 format
-cd /home/chris/DataCollection
-/home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
-    --target planner \
-    --data-dir data/vla_dataset \
-    --repo-id ChangChrisLiu/ur5e_planner \
-    --fps 10 \
-    --push-to-hub
-
-# Or keep local only (no Hub push)
-/home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
-    --target planner \
-    --data-dir data/vla_dataset \
-    --repo-id ChangChrisLiu/ur5e_planner \
-    --fps 10 \
-    --root /path/to/local/dataset
+```
+~/lerobot_datasets/ChangChrisLiu/
+├── ur5e_correction_10hz/
+├── ur5e_correction_30hz/
+├── ur5e_e2e_10hz/
+├── ur5e_e2e_30hz/
+├── ur5e_planner_10hz/
+└── ur5e_planner_30hz/
 ```
 
-For OpenPI fine-tuning, reference the dataset by repo ID in the training config. OpenPI's `DeltaActions` transform automatically converts the absolute next-step joint actions to delta format during training.
+To make OpenPI find these datasets at training time, set the environment variable:
+
+```bash
+export HF_LEROBOT_HOME=~/lerobot_datasets
+```
+
+For OpenPI fine-tuning, reference the dataset by repo ID in the training config (e.g. `ChangChrisLiu/ur5e_planner_30hz`). OpenPI's `DeltaActions` transform automatically converts the absolute next-step joint actions to delta format during training.
 
 ---
 
@@ -886,8 +886,10 @@ The `tele` conda environment has LeRobot **0.4.3** (dataset format v3.0), while 
 ```bash
 cd /home/chris/DataCollection
 /home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
-    --target planner --data-dir data/vla_dataset --fps 10
+    --target planner --data-dir data/vla_dataset --fps 30
 ```
+
+Datasets are saved to `~/lerobot_datasets/` by default. Set `HF_LEROBOT_HOME=~/lerobot_datasets` when running OpenPI training so LeRobot resolves datasets from this location.
 
 The conversion script auto-detects which LeRobot version is installed:
 - v2.1 import: `from lerobot.common.datasets.lerobot_dataset import LeRobotDataset`
@@ -921,15 +923,18 @@ The full conversion and training-ingestion pipeline has been validated end-to-en
 | e2e | 4,965 | 1,685 | 2.95x | 4 |
 | correction | 594 | 191 | 3.11x | 4 (2 real correction + 2 near-grasp) |
 
-**Production LeRobot conversions (529 episodes, 10Hz, verified loading in OpenPI v2.1):**
+**Production LeRobot conversions (529 episodes, verified loading in OpenPI v2.1):**
 
-| Target | Episodes | Frames | Notes |
-|--------|----------|--------|-------|
-| planner | 529 | 87,426 | All episodes (teleop phase + trigger/stop signals) |
-| e2e | 529 | 222,016 | All episodes (all 4 phases) |
-| correction | 527 (134 + 393 near-grasp) | 29,109 | 134 real correction + 393 near-grasp from successful episodes |
+| Target | FPS | Episodes | Frames | Notes |
+|--------|-----|----------|--------|-------|
+| planner | 10 | 529 | 87,426 | All episodes (teleop phase + trigger/stop signals) |
+| planner | 30 | 529 | 261,312 | All episodes (teleop phase + trigger/stop signals) |
+| e2e | 10 | 529 | 222,016 | All episodes (all 4 phases) |
+| e2e | 30 | 529 | 652,828 | All episodes (all 4 phases) |
+| correction | 10 | 527 (134 + 393 near-grasp) | 29,109 | 134 real correction + 393 near-grasp from successful episodes |
+| correction | 30 | 527 (134 + 393 near-grasp) | 86,028 | 134 real correction + 393 near-grasp from successful episodes |
 
-All three LeRobot datasets verified: correct shapes (`state: [7]`, `action: [7]`, images: `[3, 256, 256]`), non-zero image pixels (99.6-99.9%), and per-episode language instructions present.
+All six LeRobot datasets stored at `~/lerobot_datasets/ChangChrisLiu/`. Verified: correct shapes (`state: [7]`, `action: [7]`, images: `[3, 256, 256]`), non-zero image pixels (99.6-99.9%), and per-episode language instructions present.
 
 **Validated framework ingestion:**
 
@@ -1217,23 +1222,26 @@ GIT_LFS_SKIP_SMUDGE=1 uv sync
 ```bash
 cd /home/chris/DataCollection
 
-# Convert planner dataset at 10Hz — using OpenPI's Python
+# Convert planner dataset at 30Hz — using OpenPI's Python
 /home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
     --target planner \
     --data-dir data/vla_dataset \
-    --repo-id ChangChrisLiu/ur5e_planner \
-    --fps 10
+    --fps 30
 
-# Push to HuggingFace Hub (recommended — OpenPI loads from Hub by default)
-/home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
-    --target planner \
-    --data-dir data/vla_dataset \
-    --repo-id ChangChrisLiu/ur5e_planner \
-    --fps 10 \
-    --push-to-hub
+# Convert all three targets at 10Hz
+for target in e2e planner correction; do
+    /home/chris/openpi/.venv/bin/python scripts/convert_to_lerobot.py \
+        --target $target \
+        --data-dir data/vla_dataset \
+        --fps 10
+done
 ```
 
-The dataset is stored at `~/.cache/huggingface/lerobot/ChangChrisLiu/ur5e_planner/`.
+Datasets are saved to `~/lerobot_datasets/ChangChrisLiu/` by default. The repo ID auto-includes the FPS suffix (e.g. `ChangChrisLiu/ur5e_planner_30hz`). To make OpenPI find these datasets, set:
+
+```bash
+export HF_LEROBOT_HOME=~/lerobot_datasets
+```
 
 #### C.3 Register UR5e Config in OpenPI
 
@@ -1417,7 +1425,7 @@ TrainConfig(
         action_expert_variant="gemma_300m_lora",
     ),
     data=LeRobotUR5eDataConfig(
-        repo_id="ChangChrisLiu/ur5e_planner",
+        repo_id="ChangChrisLiu/ur5e_planner_30hz",
         assets=AssetsConfig(
             assets_dir="gs://openpi-assets/checkpoints/pi0_base/assets",
             asset_id="ur5e",
@@ -1444,7 +1452,7 @@ TrainConfig(
         paligemma_variant="gemma_2b_lora",
     ),
     data=LeRobotUR5eDataConfig(
-        repo_id="ChangChrisLiu/ur5e_planner",
+        repo_id="ChangChrisLiu/ur5e_planner_30hz",
         assets=AssetsConfig(
             assets_dir="gs://openpi-assets/checkpoints/pi0_fast_base/assets",
             asset_id="ur5e",
@@ -1465,7 +1473,7 @@ TrainConfig(
 
 To train on a different dataset target (e.g., `e2e` or `correction`), either:
 - Create separate configs with different `repo_id` values, or
-- Override at the command line: `--data.repo_id ChangChrisLiu/ur5e_e2e`
+- Override at the command line: `--data.repo_id ChangChrisLiu/ur5e_e2e_30hz`
 
 #### C.4 Compute Normalization Statistics
 
@@ -1482,7 +1490,7 @@ cd /home/chris/openpi
 uv run scripts/compute_norm_stats.py --config-name pi0_ur5e_lora
 ```
 
-This saves stats to `assets/pi0_ur5e_lora/ChangChrisLiu/ur5e_planner/`. Remove the `AssetsConfig.assets_dir` override in the config to use local stats instead of pre-trained ones.
+This saves stats to `assets/pi0_ur5e_lora/ChangChrisLiu/ur5e_planner_30hz/`. Remove the `AssetsConfig.assets_dir` override in the config to use local stats instead of pre-trained ones.
 
 **Verify normalization stats are sane:**
 
@@ -1494,12 +1502,14 @@ Check that no dimension has a near-zero `std` or extremely tight `q01`/`q99` ran
 cd /home/chris/openpi
 
 # LoRA fine-tuning with pi0 (recommended starting point)
+HF_LEROBOT_HOME=~/lerobot_datasets \
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
 uv run scripts/train.py pi0_ur5e_lora \
     --exp-name ur5e_planner_v1 \
     --overwrite
 
 # LoRA fine-tuning with pi0-FAST
+HF_LEROBOT_HOME=~/lerobot_datasets \
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
 uv run scripts/train.py pi0_fast_ur5e_lora \
     --exp-name ur5e_planner_fast_v1 \
@@ -1509,6 +1519,7 @@ uv run scripts/train.py pi0_fast_ur5e_lora \
 **Resume training** (remove `--overwrite`, auto-detects latest checkpoint):
 
 ```bash
+HF_LEROBOT_HOME=~/lerobot_datasets \
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
 uv run scripts/train.py pi0_ur5e_lora \
     --exp-name ur5e_planner_v1
@@ -1517,6 +1528,7 @@ uv run scripts/train.py pi0_ur5e_lora \
 **Override hyperparameters from CLI:**
 
 ```bash
+HF_LEROBOT_HOME=~/lerobot_datasets \
 uv run scripts/train.py pi0_ur5e_lora \
     --exp-name ur5e_planner_v1 \
     --overwrite \
