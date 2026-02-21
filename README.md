@@ -380,7 +380,7 @@ There are two entry-point scripts — one per output format. You only ever run t
 | Script | Output Format | Used By | Output Location |
 |--------|--------------|---------|-----------------|
 | `scripts/convert_to_rlds.py` | RLDS TFRecords | OpenVLA, OpenVLA-OFT | `~/tensorflow_datasets/ur5e_vla_<target>_<fps>hz/` |
-| `scripts/convert_to_lerobot.py` | LeRobot v3 | OpenPI | HuggingFace Hub or local directory |
+| `scripts/convert_to_lerobot.py` | LeRobot v2.1 | OpenPI | `~/.cache/huggingface/lerobot/<repo-id>/` or local directory |
 
 Both scripts share the same processing logic from `scripts/conversion_utils.py` (episode discovery, phase filtering, downsampling, no-op removal, trigger/stop signal synthesis).
 
@@ -834,7 +834,7 @@ Features:
 ├── scripts/                          # Conversion & calibration
 │   ├── calibrate_cameras.py          # Camera settings auto-detect/manual
 │   ├── convert_to_rlds.py            # ENTRY POINT: .pkl → RLDS TFRecords
-│   ├── convert_to_lerobot.py         # ENTRY POINT: .pkl → LeRobot v3
+│   ├── convert_to_lerobot.py         # ENTRY POINT: .pkl → LeRobot v2.1
 │   ├── conversion_utils.py           # Shared utilities (both scripts use this)
 │   ├── rlds_builder_base.py          # TFDS builder base class (schema + processing)
 │   ├── ur5e_vla_e2e/                 # TFDS builder config: e2e target (all phases)
@@ -921,13 +921,23 @@ The full conversion and training-ingestion pipeline has been validated end-to-en
 | e2e | 4,965 | 1,685 | 2.95x | 4 |
 | correction | 594 | 191 | 3.11x | 4 (2 real correction + 2 near-grasp) |
 
+**Production LeRobot conversions (529 episodes, 10Hz, verified loading in OpenPI v2.1):**
+
+| Target | Episodes | Frames | Notes |
+|--------|----------|--------|-------|
+| planner | 529 | 87,426 | All episodes (teleop phase + trigger/stop signals) |
+| e2e | 529 | 222,016 | All episodes (all 4 phases) |
+| correction | 527 (134 + 393 near-grasp) | 29,109 | 134 real correction + 393 near-grasp from successful episodes |
+
+All three LeRobot datasets verified: correct shapes (`state: [7]`, `action: [7]`, images: `[3, 256, 256]`), non-zero image pixels (99.6-99.9%), and per-episode language instructions present.
+
 **Validated framework ingestion:**
 
 | Framework | Environment | Result |
 |-----------|------------|--------|
 | OpenVLA | `conda run -n vla` in `Sibo/openvla/` | 7D actions, gripper inversion, images, language |
 | OpenVLA-OFT | `conda run -n vla` in `Sibo/openvla-oft/` | Same pipeline, verified identical |
-| OpenPI | `uv run` in `openpi/` | 7D state/action, dual cameras, task strings |
+| OpenPI | OpenPI `.venv/bin/python` | 7D state/action, dual cameras, task strings, LeRobot v2.1 format |
 
 **Gripper convention verified through full chain:**
 ```
@@ -952,7 +962,7 @@ Collect data → Convert to format → Transfer to training machine → Register
 |-------------|-----------|--------|--------------|-------------|-------------|
 | [OpenVLA](https://github.com/openvla/openvla) | PyTorch | RLDS TFRecord | 7D tokenized | LoRA (PEFT) | 48 GB+ |
 | [OpenVLA-OFT](https://github.com/moojink/openvla-oft) | PyTorch | RLDS TFRecord | 7D continuous (L1/diffusion) | LoRA + action head | 48 GB+ |
-| [OpenPI](https://github.com/Physical-Intelligence/openpi) | JAX (Flax) | LeRobot v3 | 7D flow matching | LoRA (JAX native) | 22.5 GB+ |
+| [OpenPI](https://github.com/Physical-Intelligence/openpi) | JAX (Flax) | LeRobot v2.1 | 7D flow matching | LoRA (JAX native) | 22.5 GB+ |
 
 ---
 
