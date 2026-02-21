@@ -1361,7 +1361,21 @@ uv run scripts/train.py pi0_ur5e_planner_lora_10hz --exp-name planner_v1
 
 > **Note:** Community reports suggest Pi0 may outperform Pi0.5 on single-arm tasks. Start with Pi0 LoRA, try Pi0-FAST if you prefer shorter action horizons. Pi0.5-DROID may transfer better to UR5e than Pi0.5-base since DROID is single-arm manipulation data.
 
-#### C.7 Serve Fine-Tuned Policy
+#### C.7 Training Run 1: Pi0.5-DROID LoRA (HPRC GRACE)
+
+First training campaign: 3 sequential runs on TAMU HPRC GRACE (1 GPU), Pi0.5-DROID LoRA at 10hz.
+
+| Config | Dataset | Steps | What It Learns |
+|--------|---------|-------|----------------|
+| `pi05_droid_ur5e_planner_lora_10hz` | planner 10hz (87k frames) | 30,000 | Teleop approach — when to hand off to skill |
+| `pi05_droid_ur5e_e2e_lora_10hz` | e2e 10hz (222k frames) | 30,000 | Full task — all 4 phases autonomously |
+| `pi05_droid_ur5e_correction_lora_10hz` | correction 10hz (29k frames) | 30,000 | Grasp recovery after failed grasp |
+
+**Total time**: ~36-45 hours sequential on 1 GPU. Wandb project: `ur5e-finetuning`.
+
+See [`openpi_configs/TRAINING_RUN_1.md`](openpi_configs/TRAINING_RUN_1.md) for complete SLURM scripts, monitoring, checkpoint download, and inference instructions. See [`openpi_configs/SERVER_SETUP_HPRC.md`](openpi_configs/SERVER_SETUP_HPRC.md) for server setup.
+
+#### C.8 Serve Fine-Tuned Policy
 
 ```bash
 cd /home/chris/openpi
@@ -1392,7 +1406,7 @@ action_chunk = result["actions"]  # (action_horizon, 7) absolute joint positions
 
 State and images should be sent **unnormalized** — the server handles normalization internally.
 
-#### C.8 Troubleshooting (OpenPI)
+#### C.9 Troubleshooting (OpenPI)
 
 | Issue | Solution |
 |-------|---------|
