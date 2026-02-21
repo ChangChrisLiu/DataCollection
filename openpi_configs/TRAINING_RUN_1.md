@@ -173,8 +173,8 @@ actions = result["actions"]  # (10, 7) absolute joint positions
 
 Complete ALL steps in [`SERVER_SETUP_HPRC.md`](SERVER_SETUP_HPRC.md) first:
 
-1. Upload 4 files + 4 asset dirs from local `~/openpi/` to `$SCRATCH/openpi/`
-2. Set environment variables in `~/.bashrc`
+1. Upload 6 files + 4 asset dirs from local `~/openpi/` to `$SCRATCH/openpi/` (includes `misc/` configs)
+2. Set environment variables in `~/.bashrc` (including `UV_FROZEN=1` and `WANDB_API_KEY`)
 3. Verify datasets at `$HF_LEROBOT_HOME/ChangChrisLiu/`
 4. Verify norm stats at `$SCRATCH/openpi/assets/`
 5. Pass the Python config import test

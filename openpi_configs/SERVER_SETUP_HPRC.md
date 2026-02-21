@@ -34,7 +34,7 @@ ls $HF_LEROBOT_HOME/ChangChrisLiu/ur5e_planner_10hz/
 
 ## Step 1: Upload Files from Local Machine
 
-You need to upload **4 files + 4 asset dirs** from your local machine. Run `scp` from your **local terminal**:
+You need to upload **6 files + 4 asset dirs** from your local machine. Run `scp` from your **local terminal**:
 
 ```bash
 # ---- Run on LOCAL machine ----
@@ -50,15 +50,21 @@ scp $LOCAL_OPENPI/src/openpi/policies/ur5e_policy.py \
 scp $LOCAL_OPENPI/src/openpi/training/config.py \
     $SERVER:$REMOTE_OPENPI/src/openpi/training/config.py
 
-# 3. Modified download.py (REPLACES upstream — changes default cache dir)
+# 3. Misc config modules (config.py imports these — server may not have them)
+ssh $SERVER "mkdir -p $REMOTE_OPENPI/src/openpi/training/misc"
+scp $LOCAL_OPENPI/src/openpi/training/misc/polaris_config.py \
+    $LOCAL_OPENPI/src/openpi/training/misc/roboarena_config.py \
+    $SERVER:$REMOTE_OPENPI/src/openpi/training/misc/
+
+# 4. Modified download.py (REPLACES upstream — changes default cache dir)
 scp $LOCAL_OPENPI/src/openpi/shared/download.py \
     $SERVER:$REMOTE_OPENPI/src/openpi/shared/download.py
 
-# 4. Norm stats computation script (NEW)
+# 5. Norm stats computation script (NEW)
 scp $LOCAL_OPENPI/scripts/compute_all_ur5e_norm_stats.sh \
     $SERVER:$REMOTE_OPENPI/scripts/compute_all_ur5e_norm_stats.sh
 
-# 5. Pre-computed norm stats (4 dirs, ~16KB each)
+# 6. Pre-computed norm stats (4 dirs, ~16KB each)
 scp -r $LOCAL_OPENPI/assets/pi05_droid_ur5e_planner_lora_10hz \
     $SERVER:$REMOTE_OPENPI/assets/
 scp -r $LOCAL_OPENPI/assets/pi05_droid_ur5e_e2e_lora_10hz \
@@ -75,6 +81,8 @@ scp -r $LOCAL_OPENPI/assets/pi0_ur5e_lora \
 |------|------|---------|
 | `src/openpi/policies/ur5e_policy.py` | NEW | UR5e input/output transforms (maps observations to model format) |
 | `src/openpi/training/config.py` | MODIFIED | 52 UR5e TrainConfig entries + LeRobotUR5eDataConfig class |
+| `src/openpi/training/misc/polaris_config.py` | MUST MATCH LOCAL | config.py imports this — server version may be outdated |
+| `src/openpi/training/misc/roboarena_config.py` | MUST MATCH LOCAL | config.py imports this — server version may be outdated |
 | `src/openpi/shared/download.py` | MODIFIED | DEFAULT_CACHE_DIR changed to `~/openpi_data` |
 | `scripts/compute_all_ur5e_norm_stats.sh` | NEW | Batch script to compute all norm stats |
 | `assets/pi05_droid_ur5e_*_lora_10hz/` | NEW | 3 pre-computed norm stats (Pi0.5-DROID x 10hz) |
@@ -479,6 +487,8 @@ pi0_ur5e, pi0_ur5e_lora, pi0_fast_ur5e, pi0_fast_ur5e_lora
 |-------|----------|
 | `FileNotFoundError: ChangChrisLiu/ur5e_*` | `HF_LEROBOT_HOME` must point to PARENT of `ChangChrisLiu/` — should be `/scratch/user/changliu.chris` |
 | `ModuleNotFoundError: openpi.policies.ur5e_policy` | `ur5e_policy.py` not uploaded to `src/openpi/policies/` |
+| `ModuleNotFoundError: openpi.training.misc.polaris_config` | Upload `misc/polaris_config.py` + `roboarena_config.py` from local (Step 1 item #3) |
+| `uv` dependency resolution error (dlimp/tensorflow) | `export UV_FROZEN=1` — skips re-resolution |
 | `Config 'xxx' not found` | `config.py` not updated — re-upload from local |
 | `No norm stats found` | Run `compute_norm_stats.py` for that config, or create symlink |
 | OOM during LoRA | Reduce batch size: `--batch-size 4` |
