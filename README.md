@@ -1361,9 +1361,9 @@ uv run scripts/train.py pi0_ur5e_planner_lora_10hz --exp-name planner_v1
 
 > **Note:** Community reports suggest Pi0 may outperform Pi0.5 on single-arm tasks. Start with Pi0 LoRA, try Pi0-FAST if you prefer shorter action horizons. Pi0.5-DROID may transfer better to UR5e than Pi0.5-base since DROID is single-arm manipulation data.
 
-#### C.7 Training Run 1: Pi0.5-DROID LoRA (HPRC GRACE)
+#### C.7 Training Run 1: Pi0.5-DROID LoRA x 3 Targets @ 10hz
 
-First training campaign: 3 sequential runs on TAMU HPRC GRACE (1 GPU), Pi0.5-DROID LoRA at 10hz.
+First training campaign: Pi0.5-DROID LoRA, 30k steps each, all three targets at 10hz. Run on both local desktop and GRACE server in parallel.
 
 | Config | Dataset | Steps | What It Learns |
 |--------|---------|-------|----------------|
@@ -1371,9 +1371,12 @@ First training campaign: 3 sequential runs on TAMU HPRC GRACE (1 GPU), Pi0.5-DRO
 | `pi05_droid_ur5e_e2e_lora_10hz` | e2e 10hz (222k frames) | 30,000 | Full task — all 4 phases autonomously |
 | `pi05_droid_ur5e_correction_lora_10hz` | correction 10hz (29k frames) | 30,000 | Grasp recovery after failed grasp |
 
-**Total time**: ~36-45 hours sequential on 1 GPU. Wandb project: `ur5e-finetuning`.
+**Time**: ~36-45 hours (3 sequential runs, 1 GPU). **Wandb**: `ur5e-finetuning` project.
 
-See [`openpi_configs/TRAINING_RUN_1.md`](openpi_configs/TRAINING_RUN_1.md) for complete SLURM scripts, monitoring, checkpoint download, and inference instructions. See [`openpi_configs/SERVER_SETUP_HPRC.md`](openpi_configs/SERVER_SETUP_HPRC.md) for server setup.
+**Local** (RTX 5090): Run directly in terminal — commands ready to copy-paste.
+**GRACE** (HPRC): Single SLURM job script runs all 3 sequentially.
+
+See [`openpi_configs/TRAINING_RUN_1.md`](openpi_configs/TRAINING_RUN_1.md) for the complete guide (Part A: local, Part B: GRACE). See [`openpi_configs/SERVER_SETUP_HPRC.md`](openpi_configs/SERVER_SETUP_HPRC.md) for GRACE server setup.
 
 #### C.8 Serve Fine-Tuned Policy
 

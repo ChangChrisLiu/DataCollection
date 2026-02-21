@@ -1,69 +1,201 @@
 # Training Run 1: Pi0.5-DROID LoRA x 3 Targets @ 10hz
 
-**Cluster**: TAMU HPRC GRACE (1 GPU)
-**Model**: Pi0.5-DROID (pre-trained on DROID single-arm manipulation data)
-**Variant**: LoRA fine-tuning (single GPU)
-**Steps**: 30,000 per run (3 runs sequential)
-**Estimated total time**: ~36-45 hours for all 3 runs
+Three sequential LoRA fine-tuning runs using Pi0.5-DROID on all three dataset targets at 10hz. Run locally first (immediate), then on GRACE server as backup.
 
-## Three Training Runs (Sequential)
+## Training Matrix
 
-| Order | Config Name | Dataset | Frames | What It Learns |
-|-------|------------|---------|--------|----------------|
+| # | Config Name | Dataset | Frames | What It Learns |
+|---|------------|---------|--------|----------------|
 | 1 | `pi05_droid_ur5e_planner_lora_10hz` | `ur5e_planner_10hz` | 87,426 | Teleop approach — when to hand off to skill |
 | 2 | `pi05_droid_ur5e_e2e_lora_10hz` | `ur5e_e2e_10hz` | 222,016 | Full task — all 4 phases autonomously |
-| 3 | `pi05_droid_ur5e_correction_lora_10hz` | `ur5e_correction_10hz` | 29,109 | Grasp recovery — correct after failed grasp |
+| 3 | `pi05_droid_ur5e_correction_lora_10hz` | `ur5e_correction_10hz` | 29,109 | Grasp recovery after failed grasp |
 
-All use 529 episodes, 10hz (every 3rd frame from 30hz raw data), batch_size=32.
+All use 529 episodes, 10hz, batch_size=32, 30,000 steps each.
+
+## Timing Estimates (30k steps each, 1 GPU, sequential)
+
+| Machine | GPU | Per Run | 3 Runs Total |
+|---------|-----|---------|--------------|
+| **Local desktop** | RTX 5090 | ~12-15 hrs | ~36-45 hrs |
+| **GRACE server** | Cluster GPU | ~12-15 hrs | ~36-45 hrs |
+
+30k steps is conservative — leaves room to resume to 50k+ if loss is still decreasing.
 
 ---
 
-## Prerequisites Checklist
+# Part A: Local Desktop (RTX 5090)
 
-Run on the Grace login node before submitting jobs:
+## A.1 Prerequisites
+
+Everything is already set up locally from previous sessions:
 
 ```bash
-ssh changliu.chris@grace.hprc.tamu.edu
-cd $SCRATCH/openpi
+cd ~/openpi
 
-# 1. Files uploaded
-ls src/openpi/policies/ur5e_policy.py
-
-# 2. Environment variables (should be in ~/.bashrc)
-echo $HF_LEROBOT_HOME       # /scratch/user/changliu.chris
-echo $OPENPI_DATA_HOME       # /scratch/user/changliu.chris/openpi_data
-
-# 3. Datasets accessible
-ls $HF_LEROBOT_HOME/ChangChrisLiu/ur5e_planner_10hz/
-ls $HF_LEROBOT_HOME/ChangChrisLiu/ur5e_e2e_10hz/
-ls $HF_LEROBOT_HOME/ChangChrisLiu/ur5e_correction_10hz/
-
-# 4. Norm stats uploaded
-ls assets/pi05_droid_ur5e_planner_lora_10hz/
+# Verify
+ls src/openpi/policies/ur5e_policy.py                    # policy file
+ls assets/pi05_droid_ur5e_planner_lora_10hz/              # norm stats
 ls assets/pi05_droid_ur5e_e2e_lora_10hz/
 ls assets/pi05_droid_ur5e_correction_lora_10hz/
-
-# 5. Config import test
-uv run --frozen python -c "
-from openpi.training.config import _CONFIGS
-for name in ['pi05_droid_ur5e_planner_lora_10hz',
-             'pi05_droid_ur5e_e2e_lora_10hz',
-             'pi05_droid_ur5e_correction_lora_10hz']:
-    match = [c for c in _CONFIGS if c.name == name]
-    print(f'{name}: {\"OK\" if match else \"MISSING\"}')"
+ls ~/lerobot_datasets/ChangChrisLiu/ur5e_planner_10hz/    # datasets
+ls ~/lerobot_datasets/ChangChrisLiu/ur5e_e2e_10hz/
+ls ~/lerobot_datasets/ChangChrisLiu/ur5e_correction_10hz/
 ```
 
-All 5 checks must pass before proceeding.
+## A.2 Set Wandb Key
+
+Add to `~/.bashrc` (one-time):
+
+```bash
+echo 'export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+## A.3 Run Training (One at a Time)
+
+Open a terminal and run each config sequentially. You can Ctrl+C at any time — checkpoints are saved every 1,000 steps.
+
+### Run 1: Planner
+
+```bash
+cd ~/openpi
+HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
+    --exp-name planner_v1 \
+    --project-name ur5e-finetuning \
+    --num-train-steps 30000 \
+    --overwrite
+```
+
+### Run 2: End-to-End
+
+```bash
+cd ~/openpi
+HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+uv run scripts/train.py pi05_droid_ur5e_e2e_lora_10hz \
+    --exp-name e2e_v1 \
+    --project-name ur5e-finetuning \
+    --num-train-steps 30000 \
+    --overwrite
+```
+
+### Run 3: Correction
+
+```bash
+cd ~/openpi
+HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+uv run scripts/train.py pi05_droid_ur5e_correction_lora_10hz \
+    --exp-name correction_v1 \
+    --project-name ur5e-finetuning \
+    --num-train-steps 30000 \
+    --overwrite
+```
+
+### Or: Run All 3 in One Command
+
+```bash
+cd ~/openpi
+for CONFIG_EXP in \
+    "pi05_droid_ur5e_planner_lora_10hz planner_v1" \
+    "pi05_droid_ur5e_e2e_lora_10hz e2e_v1" \
+    "pi05_droid_ur5e_correction_lora_10hz correction_v1"; do
+    CONFIG=$(echo $CONFIG_EXP | cut -d' ' -f1)
+    EXP=$(echo $CONFIG_EXP | cut -d' ' -f2)
+    echo "========================================"
+    echo "Training: $CONFIG ($EXP) — $(date)"
+    echo "========================================"
+    HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+    uv run scripts/train.py $CONFIG \
+        --exp-name $EXP \
+        --project-name ur5e-finetuning \
+        --num-train-steps 30000 \
+        --overwrite
+done
+```
+
+## A.4 Monitor
+
+**Terminal**: Training prints `Step N: loss=X.XXXX, grad_norm=X.XX, param_norm=X.XX` every 100 steps.
+
+**Wandb**: Open https://wandb.ai/losttemplor-texas-a-m-university/ur5e-finetuning to see live loss curves, gradient norms, and sample images.
+
+## A.5 Resume / Extend Training
+
+After 30k steps complete, if loss is still decreasing:
+
+```bash
+# Resume planner from 30k to 50k (NO --overwrite, same --exp-name)
+cd ~/openpi
+HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
+    --exp-name planner_v1 \
+    --project-name ur5e-finetuning \
+    --num-train-steps 50000
+```
+
+You can also stop with Ctrl+C mid-training and resume later with the same command (no `--overwrite`). It picks up from the latest saved checkpoint.
+
+**Key rule**: `--overwrite` = delete old checkpoints, start fresh. No `--overwrite` = resume from latest.
+
+## A.6 Checkpoints
+
+```
+~/openpi/checkpoints/
+├── pi05_droid_ur5e_planner_lora_10hz/planner_v1/
+│   ├── 1000/  ├── 2000/  ├── ...  └── 30000/
+├── pi05_droid_ur5e_e2e_lora_10hz/e2e_v1/
+│   ├── 1000/  ├── 2000/  ├── ...  └── 30000/
+└── pi05_droid_ur5e_correction_lora_10hz/correction_v1/
+    ├── 1000/  ├── 2000/  ├── ...  └── 30000/
+```
+
+Every 1,000-step checkpoint is kept. You can serve any of them to test on the robot.
+
+## A.7 Serve Policy for Robot Testing
+
+```bash
+cd ~/openpi
+
+# Serve planner (or swap config/dir for e2e/correction)
+uv run scripts/serve_policy.py policy:checkpoint \
+    --policy.config pi05_droid_ur5e_planner_lora_10hz \
+    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1/30000
+```
+
+**Client code** (from your robot control script):
+```python
+from openpi_client import websocket_client_policy as wcp
+
+client = wcp.WebsocketClientPolicy(host="localhost", port=8000)
+result = client.infer({
+    "observation/image": base_rgb,           # (256,256,3) uint8
+    "observation/wrist_image": wrist_rgb,    # (256,256,3) uint8
+    "observation/state": state_7d,           # [q0-q5, gripper/255] float32
+    "prompt": "Pick up the CPU",
+})
+actions = result["actions"]  # (10, 7) absolute joint positions
+```
 
 ---
 
-## Step 1: Quick Validation (5-step test)
+# Part B: HPRC GRACE Server
+
+## B.1 Prerequisites
+
+Complete ALL steps in [`SERVER_SETUP_HPRC.md`](SERVER_SETUP_HPRC.md) first:
+
+1. Upload 4 files + 4 asset dirs from local `~/openpi/` to `$SCRATCH/openpi/`
+2. Set environment variables in `~/.bashrc`
+3. Verify datasets at `$HF_LEROBOT_HOME/ChangChrisLiu/`
+4. Verify norm stats at `$SCRATCH/openpi/assets/`
+5. Pass the Python config import test
+
+## B.2 Quick Validation (5-step test)
 
 ```bash
 # Request interactive GPU session
 srun --gres=gpu:1 --mem=64G --time=00:30:00 --partition=gpu --pty bash
 
-# Run 5-step test
 cd $SCRATCH/openpi
 export UV_FROZEN=1
 
@@ -74,15 +206,10 @@ uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
     --overwrite
 
 # Expected: loss ~1.4-1.5, completes in ~2-3 min
-# If successful, exit the interactive session:
 exit
 ```
 
----
-
-## Step 2: Create the SLURM Job Script
-
-One script runs all 3 targets sequentially:
+## B.3 Create SLURM Job Script
 
 ```bash
 cat > $SCRATCH/openpi/train_all_3.slurm << 'SLURM'
@@ -144,136 +271,93 @@ uv run scripts/train.py pi05_droid_ur5e_correction_lora_10hz \
 echo "Correction finished at $(date)"
 
 echo ""
-echo "========================================"
 echo "ALL 3 RUNS COMPLETE — $(date)"
-echo "========================================"
 SLURM
 ```
 
-**Important**: Replace `<YOUR_WANDB_API_KEY>` with your actual key before submitting.
+**Replace `<YOUR_WANDB_API_KEY>` before submitting.**
 
----
-
-## Step 3: Submit
+## B.4 Submit
 
 ```bash
 cd $SCRATCH/openpi
 sbatch train_all_3.slurm
 ```
 
----
-
-## Step 4: Monitor
+## B.5 Monitor
 
 ```bash
-# Check job status
+# Job status
 squeue -u changliu.chris
 
-# Watch live output (find the log file)
-ls -t train_all_3_*.log | head -1
-tail -f train_all_3_*.log
+# Live log
+tail -f $SCRATCH/openpi/train_all_3_*.log
 
-# Wandb dashboard — all 3 runs appear here:
+# Wandb dashboard (same project as local runs):
 # https://wandb.ai/losttemplor-texas-a-m-university/ur5e-finetuning
 ```
 
-**What to look for in wandb:**
-- `loss` should decrease over time (starts ~1.4, should drop to ~0.5-1.0)
-- `grad_norm` should be stable (not exploding)
-- Camera sample images at step 0 (sanity check that data loaded correctly)
-- Checkpoints saved every 1,000 steps
+## B.6 Download Checkpoints to Local Machine
 
----
-
-## Step 5: Download Checkpoints to Local Machine
-
-After the job completes, download the final checkpoints for local inference:
+After GRACE training completes, download to local for inference:
 
 ```bash
-# Run from LOCAL machine (not server):
+# Run from LOCAL machine:
 SERVER=changliu.chris@grace.hprc.tamu.edu
 REMOTE=$SERVER:/scratch/user/changliu.chris/openpi/checkpoints
 
-# Planner
 scp -r $REMOTE/pi05_droid_ur5e_planner_lora_10hz/planner_v1/30000 \
-    ~/openpi/checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1/30000
+    ~/openpi/checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1_grace/30000
 
-# E2E
 scp -r $REMOTE/pi05_droid_ur5e_e2e_lora_10hz/e2e_v1/30000 \
-    ~/openpi/checkpoints/pi05_droid_ur5e_e2e_lora_10hz/e2e_v1/30000
+    ~/openpi/checkpoints/pi05_droid_ur5e_e2e_lora_10hz/e2e_v1_grace/30000
 
-# Correction
 scp -r $REMOTE/pi05_droid_ur5e_correction_lora_10hz/correction_v1/30000 \
-    ~/openpi/checkpoints/pi05_droid_ur5e_correction_lora_10hz/correction_v1/30000
+    ~/openpi/checkpoints/pi05_droid_ur5e_correction_lora_10hz/correction_v1_grace/30000
 ```
 
----
+Note: saved to `*_grace/` subdirs to avoid overwriting local checkpoints.
 
-## Step 6: Serve Policy Locally for Robot Testing
+## B.7 Resume on GRACE
+
+Same as local — remove `--overwrite` and increase `--num-train-steps`:
 
 ```bash
-cd ~/openpi
-
-# Serve one policy at a time (port 8000):
-uv run scripts/serve_policy.py policy:checkpoint \
-    --policy.config pi05_droid_ur5e_planner_lora_10hz \
-    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1/30000
-```
-
-**Client inference:**
-```python
-from openpi_client import websocket_client_policy as wcp
-
-client = wcp.WebsocketClientPolicy(host="localhost", port=8000)
-result = client.infer({
-    "observation/image": base_rgb,           # (256,256,3) uint8
-    "observation/wrist_image": wrist_rgb,    # (256,256,3) uint8
-    "observation/state": state_7d,           # [q0-q5, gripper/255] float32
-    "prompt": "Pick up the CPU",
-})
-actions = result["actions"]  # (10, 7) — 10-step action chunk, absolute joint positions
-```
-
----
-
-## Timing Budget (1 GPU, Sequential)
-
-| Steps/Run | Per Run | 3 Runs Total | Fits in 6 Days (144h)? |
-|-----------|---------|--------------|------------------------|
-| **30,000** | ~12-15 hrs | **~36-45 hrs** | **Yes** (99 hrs margin) |
-| 50,000 | ~20-25 hrs | ~60-75 hrs | Yes (69 hrs margin) |
-| 100,000 | ~40-50 hrs | ~120-150 hrs | Tight (maybe) |
-
-30k steps leaves plenty of room. If the loss curves look promising, resume to 50k+ (see below).
-
-## Resume / Extend Training
-
-To continue training beyond 30k steps without starting over:
-
-```bash
-# In the SLURM script, change ONLY these:
-#   --num-train-steps 50000   (new TOTAL, not additional steps)
-#   Remove --overwrite        (resumes from latest checkpoint)
-
 uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
     --exp-name planner_v1 \
     --project-name ur5e-finetuning \
     --num-train-steps 50000
-# This resumes from step 30000 and trains to 50000
 ```
 
 ---
 
-## Troubleshooting
+# Wandb Dashboard
+
+Both local and GRACE runs log to the same wandb project:
+
+**URL**: https://wandb.ai/losttemplor-texas-a-m-university/ur5e-finetuning
+
+**Metrics logged every 100 steps:**
+- `loss` — training loss (should decrease from ~1.4 to ~0.5-1.0)
+- `grad_norm` — gradient magnitude (should be stable)
+- `param_norm` — parameter magnitude
+- Camera sample images at step 0 (sanity check)
+
+Runs from local and GRACE appear side-by-side. Use wandb run names (`planner_v1`, `e2e_v1`, `correction_v1`) to identify them.
+
+---
+
+# Troubleshooting
 
 | Issue | Fix |
 |-------|-----|
-| Job stuck in `PENDING` | GPU queue is full. Wait, or check `squeue -u changliu.chris`. |
-| `Unable to initialize backend 'cuda'` | Not on a GPU node. Must use `srun --gres=gpu:1` or `sbatch`. |
-| `uv` dependency resolution error | Set `export UV_FROZEN=1` in the SLURM script. |
-| OOM | Add `--batch-size 16` (or lower) to the train command. |
-| Wandb not showing runs | Check `WANDB_API_KEY` is set. Check internet access from GPU node. |
-| Job killed (time limit) | The script requests 72h. If not enough, increase `--time`. Resume without `--overwrite`. |
-| Loss stuck / not decreasing | Check norm stats. Try lower learning rate: `--lr-schedule.peak-lr 1e-5`. |
-| Run 2 or 3 fails | The script continues to next run even if one fails. Check logs. Resubmit just the failed config. |
-| Slow first run (~20 min startup) | First run downloads ~10 GB base checkpoint from GCS. Subsequent runs reuse cache. |
+| **Local**: OOM on RTX 5090 | `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9`, or `--batch-size 16` |
+| **Local**: `ModuleNotFoundError` | Must run from `cd ~/openpi` |
+| **Local**: Slow first run | Downloads ~10 GB base checkpoint from GCS (one-time) |
+| **GRACE**: `uv` resolution error | `export UV_FROZEN=1` |
+| **GRACE**: `Unable to initialize backend 'cuda'` | Not on GPU node — use `srun --gres=gpu:1` or `sbatch` |
+| **GRACE**: `FileNotFoundError` for dataset | `HF_LEROBOT_HOME` must be `/scratch/user/changliu.chris` (parent of `ChangChrisLiu/`) |
+| **Both**: Wandb not logging | Check `WANDB_API_KEY` is set |
+| **Both**: Loss not decreasing | Check norm stats exist. Try `--lr-schedule.peak-lr 1e-5` |
+| **Both**: Want to stop and continue later | Ctrl+C (local) or `scancel` (GRACE). Resume with same `--exp-name`, no `--overwrite` |
+| **Both**: Want more than 30k steps | Resume: `--num-train-steps 50000` (no `--overwrite`) |
