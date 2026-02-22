@@ -10,7 +10,7 @@ Three sequential LoRA fine-tuning runs using Pi0.5-DROID on all three dataset ta
 | 2 | `pi05_droid_ur5e_e2e_lora_10hz` | `ur5e_e2e_10hz` | 222,016 | Full task — all 4 phases autonomously |
 | 3 | `pi05_droid_ur5e_correction_lora_10hz` | `ur5e_correction_10hz` | 29,109 | Grasp recovery after failed grasp |
 
-All use 529 episodes, 10hz, batch_size=32, 30,000 steps each.
+Planner and E2E use 529 episodes; correction uses 527 episodes. All 10hz, batch_size=32, 30,000 steps each.
 
 ## Timing Estimates (30k steps each, 1 GPU, sequential)
 
@@ -58,7 +58,7 @@ export LD_LIBRARY_PATH="$(find ~/.cache/uv/archive-v0/ -maxdepth 4 -path '*/nvid
 # LeRobot dataset location (OpenPI reads from here)
 export HF_LEROBOT_HOME="$HOME/lerobot_datasets"
 
-# JAX GPU memory — allow 90% of VRAM (prevents OOM on 24GB cards)
+# JAX GPU memory — allow 90% of VRAM (prevents OOM during training)
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
 # Wandb logging (v1 key format — must use env var, `wandb login` rejects v1 keys)
@@ -212,12 +212,14 @@ cat > $SCRATCH/openpi/train_all_3.slurm << 'SLURM'
 #SBATCH --partition=gpu
 #SBATCH --output=train_all_3_%j.log
 
-## Environment
+## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 export UV_FROZEN=1
+export http_proxy=http://10.73.132.63:8080
+export https_proxy=http://10.73.132.63:8080
 export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 
 cd /scratch/user/changliu.chris/openpi

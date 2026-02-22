@@ -36,9 +36,8 @@ cp /path/to/DataCollection/openpi_configs/compute_all_ur5e_norm_stats.sh scripts
 export HF_LEROBOT_HOME=~/lerobot_datasets
 bash scripts/compute_all_ur5e_norm_stats.sh
 
-# 8. Train
-HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-    uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz --exp-name test
+# 8. Train (env vars should already be in ~/.bashrc)
+uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz --exp-name test --project-name ur5e-finetuning
 ```
 
 ## Config Naming Convention

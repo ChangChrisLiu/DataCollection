@@ -63,8 +63,8 @@ cd DataCollection
 ### Conda Environment
 
 ```bash
-conda create -n datacollection python=3.11 -y
-conda activate datacollection
+conda create -n tele python=3.11 -y
+conda activate tele
 
 git submodule init && git submodule update
 pip install -r requirements.txt
@@ -1184,7 +1184,7 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
 
 OpenPI provides Pi0, Pi0-FAST, and Pi0.5 base models pre-trained on 10k+ hours of robot data. Fine-tuning uses **JAX with Flax NNX** and supports LoRA for memory-efficient training on consumer GPUs (22.5 GB+). Full fine-tuning requires multi-GPU setups.
 
-The OpenPI codebase is tracked as a git submodule at `third_party/openpi/`, with custom UR5e config files stored in `openpi_configs/` for reference.
+The OpenPI codebase is tracked as a git submodule at `third_party/openpi/` for version pinning. The actual working installation used for training lives at `~/openpi/` — custom UR5e config files are stored in `openpi_configs/` for reference and deployed into the working install.
 
 #### C.1 Setup
 
@@ -1311,38 +1311,31 @@ Configs sharing the same dataset + normalization type produce identical stats (P
 
 **LoRA fine-tuning (local desktop, 22.5 GB+ VRAM):**
 
+All env vars (`HF_LEROBOT_HOME`, `XLA_PYTHON_CLIENT_MEM_FRACTION`, `WANDB_API_KEY`, `LD_LIBRARY_PATH`) should be set in `~/.bashrc` (see C.1). Do NOT use inline env vars — they break when pasting.
+
 ```bash
 cd /home/chris/openpi
 
 # Pi0 LoRA — recommended starting point
-HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-uv run scripts/train.py pi0_ur5e_planner_lora_10hz \
-    --exp-name planner_v1 --overwrite
+uv run scripts/train.py pi0_ur5e_planner_lora_10hz --exp-name planner_v1 --project-name ur5e-finetuning --overwrite
 
 # Pi0-FAST LoRA
-HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-uv run scripts/train.py pi0_fast_ur5e_e2e_lora_10hz \
-    --exp-name e2e_fast_v1 --overwrite
+uv run scripts/train.py pi0_fast_ur5e_e2e_lora_10hz --exp-name e2e_fast_v1 --project-name ur5e-finetuning --overwrite
 
 # Pi0.5-DROID LoRA
-HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
-    --exp-name planner_pi05d_v1 --overwrite
+uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz --exp-name planner_pi05d_v1 --project-name ur5e-finetuning --overwrite
 ```
 
 **Full fine-tuning (server, multi-GPU):**
 
 ```bash
-HF_LEROBOT_HOME=~/lerobot_datasets \
-uv run scripts/train.py pi05_droid_ur5e_e2e_30hz \
-    --exp-name e2e_pi05d_full_v1 --fsdp-devices 4 --overwrite
+uv run scripts/train.py pi05_droid_ur5e_e2e_30hz --exp-name e2e_pi05d_full_v1 --project-name ur5e-finetuning --fsdp-devices 4 --overwrite
 ```
 
 **Resume training** (remove `--overwrite`):
 
 ```bash
-HF_LEROBOT_HOME=~/lerobot_datasets XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-uv run scripts/train.py pi0_ur5e_planner_lora_10hz --exp-name planner_v1
+uv run scripts/train.py pi0_ur5e_planner_lora_10hz --exp-name planner_v1 --project-name ur5e-finetuning
 ```
 
 **Key training parameters:**
@@ -1352,7 +1345,7 @@ uv run scripts/train.py pi0_ur5e_planner_lora_10hz --exp-name planner_v1
 | `--exp-name` | required | Unique experiment name |
 | `--overwrite` | False | Overwrite existing checkpoint dir |
 | `--num-train-steps` | 30,000 | Total training steps |
-| `--batch-size` | 32 | Reduce to 2-4 for 24 GB GPU |
+| `--batch-size` | 32 | Reduce if OOM (Pi0.5 LoRA needs ~22.5 GB) |
 | `--fsdp-devices` | 1 | Set >1 for multi-GPU FSDP |
 
 **FPS selection:** 10hz datasets are ~3x faster to train (fewer frames per episode). Use 10hz for LoRA iteration, 30hz for final training runs.
@@ -1393,9 +1386,10 @@ See [`openpi_configs/TRAINING_RUN_1.md`](openpi_configs/TRAINING_RUN_1.md) for t
 cd /home/chris/openpi
 
 # Start policy server (WebSocket, port 8000)
+# Swap config/dir for whichever model you trained
 uv run scripts/serve_policy.py policy:checkpoint \
-    --policy.config pi0_ur5e_planner_lora_10hz \
-    --policy.dir checkpoints/pi0_ur5e_planner_lora_10hz/planner_v1/30000
+    --policy.config pi05_droid_ur5e_planner_lora_10hz \
+    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1/30000
 ```
 
 **Client code for UR5e inference:**
@@ -1422,8 +1416,9 @@ State and images should be sent **unnormalized** — the server handles normaliz
 
 | Issue | Solution |
 |-------|---------|
-| `FileNotFoundError` for dataset | Set `HF_LEROBOT_HOME=~/lerobot_datasets` |
-| OOM during LoRA training | Set `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9`, reduce batch size to 1-2 |
+| `FileNotFoundError` for dataset | Set `HF_LEROBOT_HOME=~/lerobot_datasets` in `~/.bashrc` |
+| `ImportError: libcudnn.so.9` | `LD_LIBRARY_PATH` missing nvidia libs from uv cache — see C.1 env vars |
+| OOM during LoRA training | Set `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9` in `~/.bashrc`, or reduce `--batch-size` |
 | Diverging loss | Check norm stats — dimensions with tiny std cause huge normalized values |
 | CUDA error on RTX 5090 | Ensure jaxlib >= 0.5.3 (JAX 0.5.3+ works, verified) |
 | Action dimension mismatch | Pi0: `action_dim=32` internal (auto-padded). Pi0-FAST: `action_dim=7` explicit |
@@ -1432,6 +1427,9 @@ State and images should be sent **unnormalized** — the server handles normaliz
 | Missing norm stats | Run `compute_norm_stats.py` for your config before training |
 | `ModuleNotFoundError` | Run from openpi root: `cd /home/chris/openpi && uv run scripts/train.py ...` |
 | Config not found | Check exact name with `uv run scripts/train.py --help` |
+| Wandb not logging | Set `WANDB_API_KEY` in `~/.bashrc` (v1 keys must use env var, not `wandb login`) |
+| Multi-line commands fail on paste | Use single-line commands. Env vars should be in `~/.bashrc`, not inline |
+| GRACE: `uv` resolution error | `export UV_FROZEN=1` in SLURM script AND `~/.bashrc` |
 
 ---
 

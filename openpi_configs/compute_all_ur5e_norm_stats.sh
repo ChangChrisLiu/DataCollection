@@ -1,6 +1,6 @@
 #!/bin/bash
 # Compute norm stats for ALL UR5e configs.
-# Run on the training server (takes ~18 min each, ~15 hours total for all 45).
+# Computes 21 norm stat configs (~18 min each, ~6 hours total).
 # Configs sharing the same dataset + normalization type produce identical stats,
 # so you can symlink after computing one representative per group.
 #
@@ -49,4 +49,4 @@ done
 echo ""
 echo "Done! Now symlink identical stats for full-finetune configs:"
 echo "  Full finetune configs share stats with their LoRA counterpart."
-echo "  e.g., ln -s ../pi0_ur5e_planner_lora_10hz assets/pi0_ur5e_planner_10hz"
+echo "  e.g., cd assets && ln -sf pi0_ur5e_planner_lora_10hz pi0_ur5e_planner_10hz"

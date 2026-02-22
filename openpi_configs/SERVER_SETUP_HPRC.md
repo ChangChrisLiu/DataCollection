@@ -122,6 +122,11 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 # CRITICAL: skip uv dependency re-resolution (avoids dlimp/tensorflow conflict)
 export UV_FROZEN=1
 
+# CRITICAL: Grace compute nodes have NO internet access without proxy
+# Required for downloading model checkpoints from GCS and wandb logging
+export http_proxy=http://10.73.132.63:8080
+export https_proxy=http://10.73.132.63:8080
+
 # Wandb logging (v1 key format — must use env var, `wandb login` rejects v1 keys)
 export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 ```
@@ -136,7 +141,8 @@ Then: `source ~/.bashrc`
 | `HF_LEROBOT_HOME` | Must be PARENT of `ChangChrisLiu/` — OpenPI looks for `$HF_LEROBOT_HOME/ChangChrisLiu/ur5e_*` |
 | `OPENPI_DATA_HOME` | Model checkpoint download cache (10+ GB per model) |
 | `XLA_PYTHON_CLIENT_MEM_FRACTION` | JAX pre-allocates GPU memory; 0.9 = use 90% |
-| `UV_FROZEN=1` | Without this, `uv run` tries to re-resolve deps and hits `dlimp`/`tensorflow` conflict (Python 3.13+macOS markers even on Linux 3.11) |
+| `UV_FROZEN=1` | Without this, `uv run` tries to re-resolve deps and hits `dlimp`/`tensorflow` conflict |
+| `http_proxy` / `https_proxy` | Grace compute nodes have NO internet — proxy required for GCS checkpoint download + wandb |
 | `WANDB_API_KEY` | Wandb v1 keys are 86 chars; `wandb login` CLI rejects anything != 40 chars. Env var bypasses validation |
 
 ---
@@ -210,10 +216,14 @@ Create `$SCRATCH/openpi/compute_stats.slurm`:
 #SBATCH --partition=gpu
 #SBATCH --output=norm_stats_%j.log
 
-## Environment
+## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+export UV_FROZEN=1
+export http_proxy=http://10.73.132.63:8080
+export https_proxy=http://10.73.132.63:8080
 
 cd /scratch/user/changliu.chris/openpi
 bash scripts/compute_all_ur5e_norm_stats.sh
@@ -300,14 +310,17 @@ ln -sf pi0_ur5e_lora pi0_ur5e
 
 Run a 5-step training test to verify everything works.
 
+**First-run warning**: The first run downloads the base model checkpoint (~10 GB) from Google Cloud Storage. This can take 10-30+ minutes depending on cluster bandwidth. Subsequent runs use the cached checkpoint at `$OPENPI_DATA_HOME`.
+
 ### Option A: Interactive GPU Session
 
 ```bash
-# Request interactive GPU session on Grace
-srun --gres=gpu:1 --mem=64G --time=01:00:00 --partition=gpu --pty bash
+# Request interactive GPU session on Grace (2 hours for first-run download)
+srun --gres=gpu:1 --mem=64G --time=02:00:00 --partition=gpu --pty bash
 
 # Once on the GPU node:
 cd $SCRATCH/openpi
+export UV_FROZEN=1
 
 uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
     --exp-name validate \
@@ -315,7 +328,8 @@ uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
     --no-wandb-enabled \
     --overwrite
 
-# Should complete in ~2-3 min and print loss values (~1.4)
+# First run: ~15-30 min (checkpoint download). After that: ~2-3 min.
+# Should print loss values (~1.4)
 ```
 
 ### Option B: SLURM Batch Job
@@ -325,17 +339,21 @@ Create `$SCRATCH/openpi/validate.slurm`:
 ```bash
 #!/bin/bash
 #SBATCH --job-name=ur5e_validate
-#SBATCH --time=00:30:00
+#SBATCH --time=02:00:00
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --partition=gpu
 #SBATCH --output=validate_%j.log
 
+## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+export UV_FROZEN=1
+export http_proxy=http://10.73.132.63:8080
+export https_proxy=http://10.73.132.63:8080
 
 cd /scratch/user/changliu.chris/openpi
 
@@ -368,11 +386,15 @@ Create `$SCRATCH/openpi/train_ur5e.slurm`:
 #SBATCH --partition=gpu
 #SBATCH --output=train_%j.log
 
-## Environment
+## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+export UV_FROZEN=1
+export http_proxy=http://10.73.132.63:8080
+export https_proxy=http://10.73.132.63:8080
+export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 
 cd /scratch/user/changliu.chris/openpi
 
@@ -404,10 +426,15 @@ Grace has max 2 GPUs per node. For full finetune (batch_size=256):
 #SBATCH --partition=gpu
 #SBATCH --output=train_full_%j.log
 
+## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+export UV_FROZEN=1
+export http_proxy=http://10.73.132.63:8080
+export https_proxy=http://10.73.132.63:8080
+export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 
 cd /scratch/user/changliu.chris/openpi
 
@@ -514,6 +541,8 @@ pi0_ur5e, pi0_ur5e_lora, pi0_fast_ur5e, pi0_fast_ur5e_lora
 | `Unable to initialize backend 'cuda'` | Not on a GPU node — use `srun --gres=gpu:1` or submit via `sbatch` |
 | numpy version conflict | `uv pip install numpy==1.26.4` (already fixed) |
 | Slow first run | First run downloads ~10 GB base checkpoint from GCS to `$OPENPI_DATA_HOME`. This is a one-time cost per model. |
+| Checkpoint download hangs/fails | Set `http_proxy` and `https_proxy` — Grace compute nodes have NO internet without proxy |
+| Wandb fails to connect | Same proxy issue — must set `http_proxy`/`https_proxy` in SLURM script |
 | Job killed (time limit) | Increase `--time` in SLURM. Resume with same `--exp-name` without `--overwrite`. |
 | `showquota` shows full | Clean old checkpoints: `rm -rf $SCRATCH/openpi/checkpoints/<old_exp>` |
 | Login node: no GPU | Grace login nodes (grace4, grace5) have no GPUs. Use `srun` or `sbatch` for GPU work. |
