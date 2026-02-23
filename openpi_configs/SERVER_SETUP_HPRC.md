@@ -116,6 +116,7 @@ Add to your `~/.bashrc` on GRACE:
 # OpenPI environment (add to ~/.bashrc on GRACE)
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
+export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
@@ -139,7 +140,8 @@ Then: `source ~/.bashrc`
 |----------|--------------|
 | `UV_CACHE_DIR` | Points uv to scratch storage (home quota is small) |
 | `HF_LEROBOT_HOME` | Must be PARENT of `ChangChrisLiu/` — OpenPI looks for `$HF_LEROBOT_HOME/ChangChrisLiu/ur5e_*` |
-| `OPENPI_DATA_HOME` | Model checkpoint download cache (10+ GB per model) |
+| `HF_HOME` | HuggingFace model cache (FAST tokenizer etc.). Defaults to `~/.cache/huggingface` which may exceed home quota |
+| `OPENPI_DATA_HOME` | OpenPI model checkpoint download cache (10+ GB per model, from GCS) |
 | `XLA_PYTHON_CLIENT_MEM_FRACTION` | JAX pre-allocates GPU memory; 0.9 = use 90% |
 | `UV_FROZEN=1` | Without this, `uv run` tries to re-resolve deps and hits `dlimp`/`tensorflow` conflict |
 | `http_proxy` / `https_proxy` | Grace compute nodes have NO internet — proxy required for GCS checkpoint download + wandb |
@@ -217,13 +219,13 @@ Create `$SCRATCH/openpi/compute_stats.slurm`:
 #SBATCH --output=norm_stats_%j.log
 
 ## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
+module load WebProxy
+export UV_FROZEN=1
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
+export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
-export UV_FROZEN=1
-export http_proxy=http://10.73.132.63:8080
-export https_proxy=http://10.73.132.63:8080
 
 cd /scratch/user/changliu.chris/openpi
 bash scripts/compute_all_ur5e_norm_stats.sh
@@ -238,7 +240,7 @@ squeue -u changliu.chris
 tail -f norm_stats_*.log
 ```
 
-This computes 21 norm stat configs (~5-18 min each).
+This computes 12 unique norm stat configs (~18 min each, ~3.5 hours total).
 
 ### Or Compute Only What You Need
 
@@ -249,13 +251,26 @@ uv run scripts/compute_norm_stats.py --config-name pi0_ur5e_e2e_lora_30hz
 
 ### Create Symlinks (After Stats Are Computed)
 
-Configs using the same dataset + same normalization type produce identical stats.
+Configs sharing the same dataset + normalization type produce identical stats. The compute script only computes stats for **12 unique combinations** (6 Pi0 z-score + 6 Pi0-FAST quantile). All other configs get symlinks.
+
+**How norm stats sharing works:**
+
+| Norm Type | Models Using It | Compute From | Symlink To |
+|-----------|----------------|--------------|------------|
+| **z-score** | Pi0 | `pi0_ur5e_{target}_lora_{fps}hz` | Pi0 full finetune → Pi0 LoRA |
+| **quantile** | Pi0-FAST, Pi0.5-base, Pi0.5-DROID | `pi0_fast_ur5e_{target}_lora_{fps}hz` | All others → Pi0-FAST LoRA |
+
+**Total**: 12 computed + 37 symlinked + 3 pre-uploaded (Pi0.5-DROID 10hz) = 52 configs covered.
+
 Run this **after** the norm stats job completes:
 
 ```bash
 cd $SCRATCH/openpi/assets
 
-# --- Pi0: full finetune -> LoRA (same z-score stats) ---
+# ================================================================
+# GROUP 1: Pi0 full finetune → Pi0 LoRA (same z-score stats)
+# 6 symlinks
+# ================================================================
 ln -sf pi0_ur5e_planner_lora_10hz pi0_ur5e_planner_10hz
 ln -sf pi0_ur5e_planner_lora_30hz pi0_ur5e_planner_30hz
 ln -sf pi0_ur5e_e2e_lora_10hz pi0_ur5e_e2e_10hz
@@ -263,7 +278,10 @@ ln -sf pi0_ur5e_e2e_lora_30hz pi0_ur5e_e2e_30hz
 ln -sf pi0_ur5e_correction_lora_10hz pi0_ur5e_correction_10hz
 ln -sf pi0_ur5e_correction_lora_30hz pi0_ur5e_correction_30hz
 
-# --- Pi0-FAST: full finetune -> LoRA (same quantile stats) ---
+# ================================================================
+# GROUP 2: Pi0-FAST full finetune → Pi0-FAST LoRA (same quantile stats)
+# 6 symlinks
+# ================================================================
 ln -sf pi0_fast_ur5e_planner_lora_10hz pi0_fast_ur5e_planner_10hz
 ln -sf pi0_fast_ur5e_planner_lora_30hz pi0_fast_ur5e_planner_30hz
 ln -sf pi0_fast_ur5e_e2e_lora_10hz pi0_fast_ur5e_e2e_10hz
@@ -271,7 +289,10 @@ ln -sf pi0_fast_ur5e_e2e_lora_30hz pi0_fast_ur5e_e2e_30hz
 ln -sf pi0_fast_ur5e_correction_lora_10hz pi0_fast_ur5e_correction_10hz
 ln -sf pi0_fast_ur5e_correction_lora_30hz pi0_fast_ur5e_correction_30hz
 
-# --- Pi0.5-base: all variants -> Pi0-FAST LoRA (both use quantile on same data) ---
+# ================================================================
+# GROUP 3: Pi0.5-base (ALL variants) → Pi0-FAST LoRA (same quantile)
+# 12 symlinks (6 LoRA + 6 full finetune)
+# ================================================================
 ln -sf pi0_fast_ur5e_planner_lora_10hz pi05_ur5e_planner_lora_10hz
 ln -sf pi0_fast_ur5e_planner_lora_30hz pi05_ur5e_planner_lora_30hz
 ln -sf pi0_fast_ur5e_e2e_lora_10hz pi05_ur5e_e2e_lora_10hz
@@ -285,8 +306,11 @@ ln -sf pi0_fast_ur5e_e2e_lora_30hz pi05_ur5e_e2e_30hz
 ln -sf pi0_fast_ur5e_correction_lora_10hz pi05_ur5e_correction_10hz
 ln -sf pi0_fast_ur5e_correction_lora_30hz pi05_ur5e_correction_30hz
 
-# --- Pi0.5-DROID: all variants -> Pi0-FAST LoRA (same quantile stats) ---
-# Note: 10hz versions already exist from upload. -sf will overwrite with symlinks.
+# ================================================================
+# GROUP 4: Pi0.5-DROID (ALL variants) → Pi0-FAST LoRA (same quantile)
+# 12 symlinks (6 LoRA + 6 full finetune)
+# Note: 10hz LoRA versions were uploaded in Step 1 — -sf overwrites with symlinks (same data)
+# ================================================================
 ln -sf pi0_fast_ur5e_planner_lora_10hz pi05_droid_ur5e_planner_lora_10hz
 ln -sf pi0_fast_ur5e_planner_lora_30hz pi05_droid_ur5e_planner_lora_30hz
 ln -sf pi0_fast_ur5e_e2e_lora_10hz pi05_droid_ur5e_e2e_lora_10hz
@@ -300,8 +324,13 @@ ln -sf pi0_fast_ur5e_e2e_lora_30hz pi05_droid_ur5e_e2e_30hz
 ln -sf pi0_fast_ur5e_correction_lora_10hz pi05_droid_ur5e_correction_10hz
 ln -sf pi0_fast_ur5e_correction_lora_30hz pi05_droid_ur5e_correction_30hz
 
-# --- Backward-compat ---
+# ================================================================
+# GROUP 5: Backward-compat (original 4 configs)
+# 1 symlink (pi0_fast_ur5e and pi0_fast_ur5e_lora already point to planner_30hz in config)
+# ================================================================
 ln -sf pi0_ur5e_lora pi0_ur5e
+
+echo "Created $(ls -l | grep '^l' | wc -l) symlinks"
 ```
 
 ---
@@ -347,13 +376,13 @@ Create `$SCRATCH/openpi/validate.slurm`:
 #SBATCH --output=validate_%j.log
 
 ## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
+module load WebProxy
+export UV_FROZEN=1
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
+export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
-export UV_FROZEN=1
-export http_proxy=http://10.73.132.63:8080
-export https_proxy=http://10.73.132.63:8080
 
 cd /scratch/user/changliu.chris/openpi
 
@@ -379,32 +408,36 @@ Create `$SCRATCH/openpi/train_ur5e.slurm`:
 ```bash
 #!/bin/bash
 #SBATCH --job-name=ur5e_lora
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --ntasks=1
-#SBATCH --mem=64G
+#SBATCH --mem=256G
 #SBATCH --gres=gpu:1
 #SBATCH --partition=gpu
 #SBATCH --output=train_%j.log
 
 ## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
+module load WebProxy
+export UV_FROZEN=1
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
+export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
-export UV_FROZEN=1
-export http_proxy=http://10.73.132.63:8080
-export https_proxy=http://10.73.132.63:8080
 export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 
 cd /scratch/user/changliu.chris/openpi
 
 # ===== CHANGE THESE TWO LINES =====
 CONFIG="pi05_droid_ur5e_planner_lora_10hz"
-EXP_NAME="planner_v1"
+EXP_NAME="planner_lora_10hz_grace_v1"
 # ===================================
 
 uv run scripts/train.py $CONFIG \
     --exp-name $EXP_NAME \
+    --project-name ur5e-finetuning \
+    --num-train-steps 50000 \
+    --batch-size 32 \
+    --fsdp-devices 1 \
     --overwrite
 ```
 
@@ -427,13 +460,13 @@ Grace has max 2 GPUs per node. For full finetune (batch_size=256):
 #SBATCH --output=train_full_%j.log
 
 ## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
+module load WebProxy
+export UV_FROZEN=1
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
+export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
-export UV_FROZEN=1
-export http_proxy=http://10.73.132.63:8080
-export https_proxy=http://10.73.132.63:8080
 export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 
 cd /scratch/user/changliu.chris/openpi

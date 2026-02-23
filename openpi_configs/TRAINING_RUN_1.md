@@ -213,13 +213,13 @@ cat > $SCRATCH/openpi/train_all_3.slurm << 'SLURM'
 #SBATCH --output=train_all_3_%j.log
 
 ## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
+module load WebProxy
+export UV_FROZEN=1
 export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
+export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
 export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
-export UV_FROZEN=1
-export http_proxy=http://10.73.132.63:8080
-export https_proxy=http://10.73.132.63:8080
 export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 
 cd /scratch/user/changliu.chris/openpi
