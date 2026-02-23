@@ -848,6 +848,7 @@ Features:
 │   ├── ur5e_vla_e2e/                 # TFDS builder config: e2e target (all phases)
 │   ├── ur5e_vla_planner/             # TFDS builder config: planner target (teleop only)
 │   ├── ur5e_vla_correction/          # TFDS builder config: correction target
+│   ├── eval_summary.py               # Aggregate inference results (success rates, grouping)
 │   └── test_dual_camera.py           # Camera connectivity test
 ├── configs/                          # Generated config files
 │   └── camera_settings.json          # Saved camera parameters
@@ -1559,24 +1560,41 @@ python vla-scripts/deploy.py \
 ```bash
 conda activate tele
 
-# OpenPI planner (with correction model on port 8001)
+# OpenPI planner only (no correction model)
 python experiments/run_inference.py \
     --model-type openpi \
     --server-port 8000 \
     --mode planner \
     --task cpu \
     --fps 10 \
-    --correction-server-port 8001
+    --checkpoint-name pi05d_planner_v1_34k
 
-# OpenVLA planner (no correction model)
+# OpenPI planner + correction (two servers on different ports)
+python experiments/run_inference.py \
+    --model-type openpi \
+    --server-port 8000 \
+    --correction-server-port 8001 \
+    --mode planner \
+    --task cpu \
+    --fps 10 \
+    --checkpoint-name pi05d_planner_v1_34k \
+    --correction-checkpoint-name pi05d_correction_v1_30k
+
+# OpenVLA planner + correction (single-GPU server swap)
 python experiments/run_inference.py \
     --model-type openvla \
     --server-port 8000 \
+    --correction-server-port 8000 \
+    --swap-server-for-correction \
+    --unnorm-key ur5e_vla_planner_10hz \
+    --correction-unnorm-key ur5e_vla_correction_10hz \
     --mode planner \
     --task cpu \
-    --fps 10
+    --fps 10 \
+    --checkpoint-name vla_planner_v1 \
+    --correction-checkpoint-name vla_correction_v1
 
-# OpenVLA-OFT planner
+# OpenVLA-OFT planner (no correction)
 python experiments/run_inference.py \
     --model-type openvla_oft \
     --server-port 8777 \
@@ -1595,7 +1613,8 @@ python experiments/run_inference.py \
     --mode e2e \
     --task cpu \
     --fps 10 \
-    --max-steps 500
+    --max-steps 500 \
+    --checkpoint-name pi05d_e2e_v1_30k
 ```
 
 ### Language Instructions (Prompt Handling)
@@ -1647,6 +1666,10 @@ Physical gripper range: 3-230 (normalized 0.012-0.902). Stop thresholds give wid
 | `--fps` | `10` | Control rate (must match training FPS) |
 | `--max-steps` | `300` | Timeout in inference steps |
 | `--correction-server-port` | `0` | Correction model server port (0 = disabled) |
+| `--correction-unnorm-key` | `""` | Normalization key for correction model (OpenVLA/OFT only). Empty = same as `--unnorm-key` |
+| `--checkpoint-name` | `""` | Human-readable checkpoint ID for eval tracking (e.g. `pi05d_planner_v1_34k`) |
+| `--correction-checkpoint-name` | `""` | Human-readable checkpoint ID for correction model |
+| `--swap-server-for-correction` | `False` | Pause for manual server swap when correction needed (OpenVLA/OFT single-GPU) |
 | `--open-loop-horizon` | `10` | OpenPI: chunk steps to use before re-querying |
 | `--unnorm-key` | `ur5e_vla_planner_10hz` | OpenVLA/OFT normalization stats key |
 | `--record` / `--no-record` | `True` | Record episodes for evaluation |
@@ -1665,6 +1688,165 @@ The inference pipeline includes a `SafetyMonitor` (`gello/agents/safety.py`) tha
 | Workspace bounds | Configurable | All (target pose check) |
 
 Disable with `--disable-safety` for unconstrained execution (not recommended for initial testing).
+
+### Planner + Correction Switching
+
+In planner mode, when a grasp fails the pipeline can invoke a **correction model** to reposition the gripper before the skill retries. How this works depends on available VRAM:
+
+| Backend | Planner+Correction VRAM | Fits 5090 (32 GB)? | Strategy |
+|---------|------------------------|-------------------|----------|
+| OpenPI  | ~16-20 GB (2 servers)  | Yes               | Two servers on different ports simultaneously |
+| OpenVLA | ~28-32 GB (2x7B)       | No                | `--swap-server-for-correction` manual pause |
+| OpenVLA-OFT | ~28-32 GB (2x7B)  | No                | `--swap-server-for-correction` manual pause |
+
+#### OpenPI: Simultaneous Servers
+
+OpenPI models are small enough to run two servers concurrently on a single GPU:
+
+```
+T3a: cd ~/openpi && uv run scripts/serve_policy.py policy:checkpoint \
+       --policy.config pi05_droid_ur5e_planner_lora_10hz \
+       --policy.dir checkpoints/.../planner_v1/34000 --port 8000
+
+T3b: cd ~/openpi && uv run scripts/serve_policy.py policy:checkpoint \
+       --policy.config pi05_droid_ur5e_correction_lora_10hz \
+       --policy.dir checkpoints/.../correction_v1/30000 --port 8001
+
+T4:  python experiments/run_inference.py \
+       --model-type openpi --task cpu --mode planner \
+       --server-port 8000 --correction-server-port 8001 \
+       --checkpoint-name pi05d_planner_34k \
+       --correction-checkpoint-name pi05d_correction_30k
+```
+
+#### OpenVLA/OFT: Server Swap
+
+With `--swap-server-for-correction`, the script pauses **between the planner phase and skill phase** — a natural window since the skill runs from CSV waypoints (no model needed). The operator kills the planner server, starts the correction server on the same port, and presses Enter. If the grasp fails, the correction model is already loaded with zero delay:
+
+```
+T3:  cd ~/Sibo/openvla && conda activate vla && \
+     python vla-scripts/deploy.py --openvla_path <planner_ckpt> --port 8000
+
+T4:  python experiments/run_inference.py \
+       --model-type openvla --task cpu --mode planner \
+       --server-port 8000 --correction-server-port 8000 \
+       --swap-server-for-correction \
+       --unnorm-key ur5e_vla_planner_10hz \
+       --correction-unnorm-key ur5e_vla_correction_10hz \
+       --checkpoint-name vla_planner_v1 \
+       --correction-checkpoint-name vla_correction_v1
+```
+
+When the planner phase ends, T4 prints:
+```
+============================================================
+  SERVER SWAP REQUIRED
+  1. Kill the planner server
+  2. Start correction server on port 8000
+  3. Press Enter when correction server is ready...
+============================================================
+```
+
+The operator swaps the server in T3, presses Enter in T4, and the skill runs. If the grasp succeeds, the correction model is never queried. If it fails, correction is ready immediately.
+
+#### Without Correction (Planner-Only)
+
+Omit `--correction-server-port` to skip correction entirely. If a grasp fails, the episode is saved with outcome `"grasp_failed_no_correction"`:
+
+```bash
+python experiments/run_inference.py \
+    --model-type openpi --task cpu --mode planner \
+    --server-port 8000
+```
+
+### Episode Metadata (Inference)
+
+Each inference episode saves an `episode_meta.json` with all tracking fields:
+
+```json
+{
+    "skill_name": "cpu",
+    "skill_outcome": "completed",
+    "model_type": "openpi",
+    "prompt": "Extract the CPU from the Bracket...",
+    "checkpoint_name": "pi05d_planner_v1_34k",
+    "correction_checkpoint_name": "pi05d_correction_v1_30k",
+    "mode": "planner",
+    "inference_fps": 10,
+    "grasp_verified": true,
+    "grasp_commanded": 132,
+    "grasp_actual": 85,
+    "phase_counts": {"teleop": 120, "skill": 30},
+    "num_frames": 150
+}
+```
+
+Possible `skill_outcome` values:
+- `"completed"` — skill finished successfully
+- `"completed_after_correction"` — grasp failed, correction model repositioned, skill resumed and completed
+- `"stop_signal"` — e2e mode, model emitted stop signal
+- `"timeout"` — max steps reached without stop signal
+- `"correction_timeout"` — correction model timed out without stop signal
+- `"grasp_failed_no_correction"` — grasp failed, no correction model configured
+- `"interrupted"` — skill interrupted (e.g. drop detected)
+- `"skill_resume_failed"` — skill resume after correction did not complete
+- `"estop"` — Ctrl+C emergency stop
+
+---
+
+## Model Evaluation
+
+### Evaluation Summary Script
+
+After running inference episodes, aggregate results with `scripts/eval_summary.py`:
+
+```bash
+# Summary of all inference episodes
+python scripts/eval_summary.py --data-dir data/inference_episodes
+
+# Filter by model type
+python scripts/eval_summary.py --data-dir data/inference_episodes --model-type openpi
+
+# Filter by task
+python scripts/eval_summary.py --data-dir data/inference_episodes --task cpu
+
+# Export to CSV
+python scripts/eval_summary.py --data-dir data/inference_episodes --csv results.csv
+```
+
+Output:
+
+```
+Found 40 episodes in data/inference_episodes
+
+Model        | Checkpoint               | Mode      | Task   | N    | OK   | Rate    | Timeout | GraspFail | Corrected | EStop
+------------------------------------------------------------------------------------------------------------------------------
+openpi       | pi05d_planner_v1_34k     | planner   | cpu    |   10 |    7 |  70.0%  |       2 |         1 |         2 |     0
+openpi       | pi05d_planner_v1_34k     | planner   | ram    |   10 |    8 |  80.0%  |       1 |         1 |         3 |     0
+openvla      | vla_planner_v1           | planner   | cpu    |   10 |    5 |  50.0%  |       3 |         2 |         0 |     0
+openvla_oft  | oft_planner_v1           | planner   | cpu    |   10 |    6 |  60.0%  |       2 |         2 |         1 |     0
+```
+
+The script recurses into subdirectories, groups by `(model_type, checkpoint_name, mode, task)`, and counts successes. An episode is considered successful if its outcome is `"completed"`, `"completed_after_correction"`, or `"stop_signal"`.
+
+The `--csv` flag writes the same table as a CSV file for further analysis (e.g. plotting success rate curves across checkpoints).
+
+### Evaluation Test Matrix
+
+Run 10+ episodes per combination. Prioritize by checkpoint availability:
+
+| Phase | Backend | Mode | Task | Planner Checkpoint | Correction Checkpoint |
+|-------|---------|------|------|-------------------|----------------------|
+| 1     | openpi  | planner | cpu | planner_v1/best | none (not trained yet) |
+| 1     | openpi  | planner | ram | planner_v1/best | none |
+| 2     | openpi  | planner | cpu | planner_v1/best | correction_v1/best |
+| 2     | openpi  | planner | ram | planner_v1/best | correction_v1/best |
+| 3     | openpi  | e2e     | cpu | e2e_v1/best | n/a |
+| 3     | openpi  | e2e     | ram | e2e_v1/best | n/a |
+| 4     | openvla | planner | cpu | planner_v1  | none or swap |
+| 4     | openvla_oft | planner | cpu | planner_v1 | none or swap |
+
+After each phase, run `eval_summary.py` to compare results across models and checkpoints.
 
 ---
 

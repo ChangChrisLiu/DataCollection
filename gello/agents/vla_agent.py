@@ -135,8 +135,9 @@ class OpenPIAdapter:
     Requires: pip install /home/chris/openpi/packages/openpi-client/
     """
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8000,
-                 open_loop_horizon: int = 10):
+    def __init__(
+        self, host: str = "127.0.0.1", port: int = 8000, open_loop_horizon: int = 10
+    ):
         try:
             from openpi_client.websocket_client_policy import WebsocketClientPolicy
         except ImportError:
@@ -169,8 +170,13 @@ class OpenPIAdapter:
         n = min(self.open_loop_horizon, len(actions))
         return [actions[i] for i in range(n)]
 
-    def apply_action(self, action: np.ndarray, obs: Dict[str, Any],
-                     robot_client, safety: Optional[SafetyMonitor]) -> None:
+    def apply_action(
+        self,
+        action: np.ndarray,
+        obs: Dict[str, Any],
+        robot_client,
+        safety: Optional[SafetyMonitor],
+    ) -> None:
         """Apply absolute joint action via servoJ."""
         target = np.array(action, dtype=np.float64)
 
@@ -206,8 +212,12 @@ class OpenVLAAdapter:
 
     _json_patched = False
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8000,
-                 unnorm_key: str = "ur5e_vla_planner_10hz"):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8000,
+        unnorm_key: str = "ur5e_vla_planner_10hz",
+    ):
         try:
             import json_numpy
             import requests as _requests
@@ -239,8 +249,13 @@ class OpenVLAAdapter:
         action = np.array(response.json(), dtype=np.float64)
         return [action]
 
-    def apply_action(self, action: np.ndarray, obs: Dict[str, Any],
-                     robot_client, safety: Optional[SafetyMonitor]) -> None:
+    def apply_action(
+        self,
+        action: np.ndarray,
+        obs: Dict[str, Any],
+        robot_client,
+        safety: Optional[SafetyMonitor],
+    ) -> None:
         """Apply EEF delta via moveL."""
         _apply_eef_delta(action, robot_client, safety)
 
@@ -269,8 +284,12 @@ class OpenVLAOFTAdapter:
 
     _json_patched = False
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8777,
-                 unnorm_key: str = "ur5e_vla_planner_10hz"):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8777,
+        unnorm_key: str = "ur5e_vla_planner_10hz",
+    ):
         try:
             import json_numpy
             import requests as _requests
@@ -313,8 +332,13 @@ class OpenVLAOFTAdapter:
         else:
             return [np.array(result, dtype=np.float64)]
 
-    def apply_action(self, action: np.ndarray, obs: Dict[str, Any],
-                     robot_client, safety: Optional[SafetyMonitor]) -> None:
+    def apply_action(
+        self,
+        action: np.ndarray,
+        obs: Dict[str, Any],
+        robot_client,
+        safety: Optional[SafetyMonitor],
+    ) -> None:
         """Apply EEF delta via moveL (same as OpenVLA)."""
         _apply_eef_delta(action, robot_client, safety)
 

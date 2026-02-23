@@ -201,6 +201,20 @@ class Args:
     correction_server_port: int = 0
     """Port for correction model server (planner mode). 0 = no correction model."""
 
+    correction_unnorm_key: str = ""
+    """Normalization key for correction model (OpenVLA only). Empty = same as unnorm_key."""
+
+    # --- Checkpoint tracking ---
+    checkpoint_name: str = ""
+    """Human-readable checkpoint ID for eval tracking (e.g. 'pi05d_planner_v1_34k')."""
+
+    correction_checkpoint_name: str = ""
+    """Human-readable checkpoint ID for correction model."""
+
+    # --- Server swap for VRAM-constrained setups ---
+    swap_server_for_correction: bool = False
+    """Pause for manual server swap when correction needed (OpenVLA/OFT single-GPU)."""
+
     # --- OpenVLA / OFT specific ---
     unnorm_key: str = "ur5e_vla_planner_10hz"
     """Normalization stats key for OpenVLA/OFT models."""
@@ -211,7 +225,7 @@ class Args:
 # ---------------------------------------------------------------------------
 
 
-def create_adapter(args: Args, port_override: int = 0):
+def create_adapter(args: Args, port_override: int = 0, unnorm_key_override: str = ""):
     """Create a model adapter from CLI args.
 
     All three backends use server-client architecture — the adapter
@@ -220,9 +234,11 @@ def create_adapter(args: Args, port_override: int = 0):
     Args:
         args: CLI args.
         port_override: Override server port (used for correction model).
+        unnorm_key_override: Override unnorm_key (used for correction model).
     """
     host = args.server_host
     port = port_override or args.server_port
+    key = unnorm_key_override or args.unnorm_key
 
     if args.model_type == "openpi":
         return OpenPIAdapter(
@@ -234,13 +250,13 @@ def create_adapter(args: Args, port_override: int = 0):
         return OpenVLAAdapter(
             host=host,
             port=port,
-            unnorm_key=args.unnorm_key,
+            unnorm_key=key,
         )
     elif args.model_type == "openvla_oft":
         return OpenVLAOFTAdapter(
             host=host,
             port=port,
-            unnorm_key=args.unnorm_key,
+            unnorm_key=key,
         )
     else:
         raise ValueError(f"Unknown model type: {args.model_type}")
@@ -328,6 +344,10 @@ def save_and_go_home(
     grasp_info: Optional[Dict[str, Any]] = None,
     model_type: str = "",
     prompt: str = "",
+    checkpoint_name: str = "",
+    correction_checkpoint_name: str = "",
+    mode: str = "",
+    inference_fps: int = 0,
 ):
     """Stop recording, save episode, move home."""
     robot_client.speed_stop()
@@ -342,6 +362,10 @@ def save_and_go_home(
             "skill_outcome": outcome,
             "model_type": model_type,
             "prompt": prompt,
+            "checkpoint_name": checkpoint_name,
+            "correction_checkpoint_name": correction_checkpoint_name,
+            "mode": mode,
+            "inference_fps": inference_fps,
             **(grasp_info or {}),
         }
         writer.save_unified_episode(frames, segments, metadata=episode_meta)
@@ -394,7 +418,9 @@ def run_planner_mode(
         if args.record:
             cur_w = obs.get("wrist_timestamp", 0.0)
             cur_b = obs.get("base_timestamp", 0.0)
-            if (cur_w > 0 and cur_w > last_wrist_ts) or (cur_b > 0 and cur_b > last_base_ts):
+            if (cur_w > 0 and cur_w > last_wrist_ts) or (
+                cur_b > 0 and cur_b > last_base_ts
+            ):
                 frame = build_frame(obs, camera_clients, args.image_size)
                 buffer.record_frame(frame)
                 if cur_w > last_wrist_ts:
@@ -418,15 +444,25 @@ def run_planner_mode(
             print(
                 f"\r[PLANNER] step {step}/{args.max_steps} | "
                 f"frames: {buffer.num_frames}     ",
-                end="", flush=True,
+                end="",
+                flush=True,
             )
 
     if not agent.stop_detected:
         print(f"\n[PLANNER] Max steps ({args.max_steps}) reached without stop signal")
         save_and_go_home(
-            robot_client, buffer, writer, rec_mgr,
-            skill_name=args.task, outcome="timeout",
-            model_type=args.model_type, prompt=prompt,
+            robot_client,
+            buffer,
+            writer,
+            rec_mgr,
+            skill_name=args.task,
+            outcome="timeout",
+            model_type=args.model_type,
+            prompt=prompt,
+            checkpoint_name=args.checkpoint_name,
+            correction_checkpoint_name=args.correction_checkpoint_name,
+            mode=args.mode,
+            inference_fps=args.fps,
         )
         return
 
@@ -435,6 +471,17 @@ def run_planner_mode(
     # ---------------------------------------------------------------
     robot_client.speed_stop()
     time.sleep(0.1)
+
+    # Server swap window: planner done, skill is CSV-only (no model needed)
+    if args.swap_server_for_correction:
+        port = args.correction_server_port or args.server_port
+        print("\n" + "=" * 60)
+        print("  SERVER SWAP REQUIRED")
+        print(f"  1. Kill the planner server")
+        print(f"  2. Start correction server on port {port}")
+        print("  3. Press Enter when correction server is ready...")
+        print("=" * 60)
+        input()
 
     trigger_tcp = robot_client.get_tcp_pose_raw()
     buffer.set_phase("skill")
@@ -463,10 +510,19 @@ def run_planner_mode(
         rec_mgr.stop()
         print("[PIPELINE] Skill completed successfully!")
         save_and_go_home(
-            robot_client, buffer, writer, rec_mgr,
-            skill_name=args.task, outcome="completed",
+            robot_client,
+            buffer,
+            writer,
+            rec_mgr,
+            skill_name=args.task,
+            outcome="completed",
             grasp_info=grasp_info,
-            model_type=args.model_type, prompt=prompt,
+            model_type=args.model_type,
+            prompt=prompt,
+            checkpoint_name=args.checkpoint_name,
+            correction_checkpoint_name=args.correction_checkpoint_name,
+            mode=args.mode,
+            inference_fps=args.fps,
         )
         return
 
@@ -475,10 +531,19 @@ def run_planner_mode(
         rec_mgr.stop()
         print("[PIPELINE] Skill interrupted — saving episode")
         save_and_go_home(
-            robot_client, buffer, writer, rec_mgr,
-            skill_name=args.task, outcome="interrupted",
+            robot_client,
+            buffer,
+            writer,
+            rec_mgr,
+            skill_name=args.task,
+            outcome="interrupted",
             grasp_info=grasp_info,
-            model_type=args.model_type, prompt=prompt,
+            model_type=args.model_type,
+            prompt=prompt,
+            checkpoint_name=args.checkpoint_name,
+            correction_checkpoint_name=args.correction_checkpoint_name,
+            mode=args.mode,
+            inference_fps=args.fps,
         )
         return
 
@@ -488,10 +553,19 @@ def run_planner_mode(
     if correction_agent is None:
         print("[PIPELINE] No correction model configured — saving failed episode")
         save_and_go_home(
-            robot_client, buffer, writer, rec_mgr,
-            skill_name=args.task, outcome="grasp_failed_no_correction",
+            robot_client,
+            buffer,
+            writer,
+            rec_mgr,
+            skill_name=args.task,
+            outcome="grasp_failed_no_correction",
             grasp_info=grasp_info,
-            model_type=args.model_type, prompt=prompt,
+            model_type=args.model_type,
+            prompt=prompt,
+            checkpoint_name=args.checkpoint_name,
+            correction_checkpoint_name=args.correction_checkpoint_name,
+            mode=args.mode,
+            inference_fps=args.fps,
         )
         return
 
@@ -501,7 +575,9 @@ def run_planner_mode(
     last_wrist_ts = 0.0
     last_base_ts = 0.0
 
-    print(f"\n[CORRECTION] Starting correction ({args.max_steps} max steps @ {args.fps} Hz)")
+    print(
+        f"\n[CORRECTION] Starting correction ({args.max_steps} max steps @ {args.fps} Hz)"
+    )
 
     for step in range(args.max_steps):
         t0 = time.time()
@@ -511,7 +587,9 @@ def run_planner_mode(
         if args.record:
             cur_w = obs.get("wrist_timestamp", 0.0)
             cur_b = obs.get("base_timestamp", 0.0)
-            if (cur_w > 0 and cur_w > last_wrist_ts) or (cur_b > 0 and cur_b > last_base_ts):
+            if (cur_w > 0 and cur_w > last_wrist_ts) or (
+                cur_b > 0 and cur_b > last_base_ts
+            ):
                 frame = build_frame(obs, camera_clients, args.image_size)
                 buffer.record_frame(frame)
                 if cur_w > last_wrist_ts:
@@ -533,16 +611,26 @@ def run_planner_mode(
             print(
                 f"\r[CORRECTION] step {step}/{args.max_steps} | "
                 f"frames: {buffer.num_frames}     ",
-                end="", flush=True,
+                end="",
+                flush=True,
             )
 
     if not correction_agent.stop_detected:
         print(f"\n[CORRECTION] Max steps reached without stop signal")
         save_and_go_home(
-            robot_client, buffer, writer, rec_mgr,
-            skill_name=args.task, outcome="correction_timeout",
+            robot_client,
+            buffer,
+            writer,
+            rec_mgr,
+            skill_name=args.task,
+            outcome="correction_timeout",
             grasp_info=grasp_info,
-            model_type=args.model_type, prompt=prompt,
+            model_type=args.model_type,
+            prompt=prompt,
+            checkpoint_name=args.checkpoint_name,
+            correction_checkpoint_name=args.correction_checkpoint_name,
+            mode=args.mode,
+            inference_fps=args.fps,
         )
         return
 
@@ -568,10 +656,19 @@ def run_planner_mode(
     outcome = "completed_after_correction" if completed else "skill_resume_failed"
     print(f"[PIPELINE] Skill resume {'completed' if completed else 'failed'}.")
     save_and_go_home(
-        robot_client, buffer, writer, rec_mgr,
-        skill_name=args.task, outcome=outcome,
+        robot_client,
+        buffer,
+        writer,
+        rec_mgr,
+        skill_name=args.task,
+        outcome=outcome,
         grasp_info=grasp_info,
-        model_type=args.model_type, prompt=prompt,
+        model_type=args.model_type,
+        prompt=prompt,
+        checkpoint_name=args.checkpoint_name,
+        correction_checkpoint_name=args.correction_checkpoint_name,
+        mode=args.mode,
+        inference_fps=args.fps,
     )
 
 
@@ -610,7 +707,9 @@ def run_e2e_mode(
         if args.record:
             cur_w = obs.get("wrist_timestamp", 0.0)
             cur_b = obs.get("base_timestamp", 0.0)
-            if (cur_w > 0 and cur_w > last_wrist_ts) or (cur_b > 0 and cur_b > last_base_ts):
+            if (cur_w > 0 and cur_w > last_wrist_ts) or (
+                cur_b > 0 and cur_b > last_base_ts
+            ):
                 frame = build_frame(obs, camera_clients, args.image_size)
                 buffer.record_frame(frame)
                 if cur_w > last_wrist_ts:
@@ -632,15 +731,25 @@ def run_e2e_mode(
             print(
                 f"\r[E2E] step {step}/{args.max_steps} | "
                 f"frames: {buffer.num_frames}     ",
-                end="", flush=True,
+                end="",
+                flush=True,
             )
 
     outcome = "stop_signal" if agent.stop_detected else "timeout"
     print(f"\n[E2E] Episode complete ({step + 1} steps, {outcome})")
     save_and_go_home(
-        robot_client, buffer, writer, rec_mgr,
-        skill_name="e2e", outcome=outcome,
-        model_type=args.model_type, prompt=prompt,
+        robot_client,
+        buffer,
+        writer,
+        rec_mgr,
+        skill_name="e2e",
+        outcome=outcome,
+        model_type=args.model_type,
+        prompt=prompt,
+        checkpoint_name=args.checkpoint_name,
+        correction_checkpoint_name=args.correction_checkpoint_name,
+        mode=args.mode,
+        inference_fps=args.fps,
     )
 
 
@@ -685,9 +794,15 @@ def main(args: Args):
     print(f"  Prompt:   {prompt}")
     print(f"  FPS:      {args.fps} Hz")
     print(f"  Max steps: {args.max_steps}")
+    if args.checkpoint_name:
+        print(f"  Checkpoint: {args.checkpoint_name}")
     if args.mode == "planner":
         if args.correction_server_port > 0:
             print(f"  Correction: {args.server_host}:{args.correction_server_port}")
+            if args.correction_checkpoint_name:
+                print(f"  Corr ckpt:  {args.correction_checkpoint_name}")
+            if args.swap_server_for_correction:
+                print("  Server swap: enabled (manual)")
         else:
             print("  Correction: none")
     print(f"  Robot:    {args.hostname}:{args.robot_port}")
@@ -744,9 +859,13 @@ def main(args: Args):
         correction_adapter = create_adapter(
             args,
             port_override=args.correction_server_port,
+            unnorm_key_override=args.correction_unnorm_key,
         )
         correction_agent = VLAAgent(
-            correction_adapter, args.fps, prompt, safety,
+            correction_adapter,
+            args.fps,
+            prompt,
+            safety,
         )
         print("[INIT] Correction adapter ready.")
 
@@ -779,7 +898,11 @@ def main(args: Args):
     buffer = EpisodeBuffer()
     writer = DatasetWriter(data_dir=args.data_dir)
     rec_mgr = RecordingThreadManager(
-        obs_client, camera_clients, buffer, args.record_hz, args.image_size,
+        obs_client,
+        camera_clients,
+        buffer,
+        args.record_hz,
+        args.image_size,
     )
 
     # ------------------------------------------------------------------
@@ -795,16 +918,27 @@ def main(args: Args):
     try:
         if args.mode == "planner":
             run_planner_mode(
-                args, agent, correction_agent,
-                robot_client, obs_client, camera_clients,
-                skill_executor, buffer, writer, rec_mgr,
+                args,
+                agent,
+                correction_agent,
+                robot_client,
+                obs_client,
+                camera_clients,
+                skill_executor,
+                buffer,
+                writer,
+                rec_mgr,
                 prompt=prompt,
             )
         elif args.mode == "e2e":
             run_e2e_mode(
-                args, agent,
-                robot_client, camera_clients,
-                buffer, writer, rec_mgr,
+                args,
+                agent,
+                robot_client,
+                camera_clients,
+                buffer,
+                writer,
+                rec_mgr,
                 prompt=prompt,
             )
         else:
@@ -828,6 +962,10 @@ def main(args: Args):
                 "skill_outcome": "estop",
                 "model_type": args.model_type,
                 "prompt": prompt,
+                "checkpoint_name": args.checkpoint_name,
+                "correction_checkpoint_name": args.correction_checkpoint_name,
+                "mode": args.mode,
+                "inference_fps": args.fps,
             }
             writer.save_unified_episode(frames, segments, metadata=episode_meta)
 
