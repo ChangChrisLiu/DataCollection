@@ -115,14 +115,17 @@ uv run scripts/train.py pi05_droid_ur5e_correction_lora_10hz --exp-name correcti
 After 30k steps complete, if loss is still decreasing:
 
 ```bash
-# Resume planner from 30k to 50k (NO --overwrite, same --exp-name)
+# Resume planner from 30k to 50k (--resume, same --exp-name)
 cd ~/openpi
-uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz --exp-name planner_v1 --project-name ur5e-finetuning --num-train-steps 50000
+uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz --exp-name planner_v1 --project-name ur5e-finetuning --num-train-steps 50000 --resume
 ```
 
-You can also stop with Ctrl+C mid-training and resume later with the same command (no `--overwrite`). It picks up from the latest saved checkpoint.
+You can also stop with Ctrl+C mid-training and resume later with the same command. It picks up from the latest saved checkpoint.
 
-**Key rule**: `--overwrite` = delete old checkpoints, start fresh. No `--overwrite` = resume from latest.
+**Key rule — three modes:**
+- `--overwrite` = delete old checkpoints, start fresh
+- `--resume` = resume from latest checkpoint
+- **Neither** = error if checkpoint dir already exists (`FileExistsError`)
 
 **Important**: All env vars (`HF_LEROBOT_HOME`, `XLA_PYTHON_CLIENT_MEM_FRACTION`, etc.) are set in `~/.bashrc` from Step A.2. Do NOT use inline env vars on the command line — they break when pasting.
 
@@ -313,13 +316,14 @@ Note: saved to `*_grace/` subdirs to avoid overwriting local checkpoints.
 
 ## B.7 Resume on GRACE
 
-Same as local — remove `--overwrite` and increase `--num-train-steps`:
+Same as local — replace `--overwrite` with `--resume` and increase `--num-train-steps`:
 
 ```bash
 uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
     --exp-name planner_v1 \
     --project-name ur5e-finetuning \
-    --num-train-steps 50000
+    --num-train-steps 50000 \
+    --resume
 ```
 
 ---
@@ -357,5 +361,6 @@ Runs from local and GRACE appear side-by-side. Use wandb run names (`planner_v1`
 | **GRACE**: `Disk quota exceeded` | HF datasets cache filling scratch. `find $SCRATCH -name '*.arrow' -path '*/cache/*' -delete` |
 | **Both**: Wandb not logging | Check `WANDB_API_KEY` is set |
 | **Both**: Loss not decreasing | Check norm stats exist. Try `--lr-schedule.peak-lr 1e-5` |
-| **Both**: Want to stop and continue later | Ctrl+C (local) or `scancel` (GRACE). Resume with same `--exp-name`, no `--overwrite` |
-| **Both**: Want more than 30k steps | Resume: `--num-train-steps 50000` (no `--overwrite`) |
+| **Both**: Want to stop and continue later | Ctrl+C (local) or `scancel` (GRACE). Resume with same `--exp-name` + `--resume` flag |
+| **Both**: Want more than 30k steps | Resume: `--num-train-steps 50000 --resume` |
+| **Both**: `FileExistsError` on checkpoint dir | Must use either `--overwrite` (start fresh) or `--resume` (continue). Omitting both = error. |

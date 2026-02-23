@@ -1332,10 +1332,10 @@ uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz --exp-name planner_pi0
 uv run scripts/train.py pi05_droid_ur5e_e2e_30hz --exp-name e2e_pi05d_full_v1 --project-name ur5e-finetuning --fsdp-devices 4 --overwrite
 ```
 
-**Resume training** (remove `--overwrite`):
+**Resume training** (replace `--overwrite` with `--resume`):
 
 ```bash
-uv run scripts/train.py pi0_ur5e_planner_lora_10hz --exp-name planner_v1 --project-name ur5e-finetuning
+uv run scripts/train.py pi0_ur5e_planner_lora_10hz --exp-name planner_v1 --project-name ur5e-finetuning --num-train-steps 50000 --resume
 ```
 
 **Key training parameters:**
@@ -1343,7 +1343,8 @@ uv run scripts/train.py pi0_ur5e_planner_lora_10hz --exp-name planner_v1 --proje
 | Parameter | Default | Notes |
 |-----------|---------|-------|
 | `--exp-name` | required | Unique experiment name |
-| `--overwrite` | False | Overwrite existing checkpoint dir |
+| `--overwrite` | False | Delete existing checkpoints, start fresh |
+| `--resume` | False | Resume from latest checkpoint in existing dir |
 | `--num-train-steps` | 30,000 | Total training steps |
 | `--batch-size` | 32 | Reduce if OOM (Pi0.5 LoRA needs ~22.5 GB) |
 | `--fsdp-devices` | 1 | Set >1 for multi-GPU FSDP |
@@ -1423,7 +1424,7 @@ State and images should be sent **unnormalized** — the server handles normaliz
 | CUDA error on RTX 5090 | Ensure jaxlib >= 0.5.3 (JAX 0.5.3+ works, verified) |
 | Action dimension mismatch | Pi0: `action_dim=32` internal (auto-padded). Pi0-FAST: `action_dim=7` explicit |
 | Strange robot movements | Verify `DeltaActions` mask: `make_bool_mask(6, -1)` = delta joints, absolute gripper |
-| Cannot resume training | Remove `--overwrite` flag — auto-detects latest checkpoint |
+| Cannot resume training | Use `--resume` flag (not just removing `--overwrite` — that errors if checkpoint dir exists) |
 | Missing norm stats | Run `compute_norm_stats.py` for your config before training |
 | `ModuleNotFoundError` | Run from openpi root: `cd /home/chris/openpi && uv run scripts/train.py ...` |
 | Config not found | Check exact name with `uv run scripts/train.py --help` |

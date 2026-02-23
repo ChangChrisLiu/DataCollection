@@ -577,11 +577,16 @@ showquota
 
 ## Step 8: Resume / Continue Training
 
-Remove `--overwrite` to auto-resume from the latest checkpoint:
+Replace `--overwrite` with `--resume` and increase `--num-train-steps`:
 
 ```bash
-uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz --exp-name planner_v1
+uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz --exp-name planner_v1 --num-train-steps 50000 --resume
 ```
+
+**Three modes:**
+- `--overwrite` = delete old checkpoints, start fresh
+- `--resume` = resume from latest checkpoint
+- **Neither** = error if checkpoint dir exists (`FileExistsError`)
 
 Checkpoints are saved to `$SCRATCH/openpi/checkpoints/<config_name>/<exp_name>/`.
 
@@ -647,7 +652,8 @@ pi0_ur5e, pi0_ur5e_lora, pi0_fast_ur5e, pi0_fast_ur5e_lora
 | `OSError: paligemma_tokenizer` not found | Tokenizer not cached. Pre-download on login node: `uv run python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('google/paligemma-3b-pt-224')"` |
 | `Disk quota exceeded` during training | HF datasets Arrow cache filling scratch. Set `HF_HOME` to scratch, clean: `find $SCRATCH -name '*.arrow' -path '*/cache/*' -delete` |
 | Wandb fails to connect | `module load WebProxy` in SLURM script — wandb uses `requests` which respects proxy (unlike gcsfs) |
-| Job killed (time limit) | Increase `--time` in SLURM. Resume with same `--exp-name` without `--overwrite`. |
+| Job killed (time limit) | Increase `--time` in SLURM. Resume with same `--exp-name` + `--resume` flag. |
+| `FileExistsError` on checkpoint dir | Must use `--overwrite` (start fresh) or `--resume` (continue). Omitting both = error. |
 | `showquota` shows full | Clean old checkpoints: `rm -rf $SCRATCH/openpi/checkpoints/<old_exp>` |
 | Login node: no GPU | Grace login nodes (grace4, grace5) have no GPUs. Use `srun` or `sbatch` for GPU work. |
 
