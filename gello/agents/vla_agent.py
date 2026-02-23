@@ -10,7 +10,7 @@ can always run from the ``tele`` conda env:
 
 Usage:
     adapter = OpenPIAdapter(host="127.0.0.1", port=8000)
-    agent = VLAAgent(adapter, control_fps=10, prompt="pick up the cpu")
+    agent = VLAAgent(adapter, control_fps=10, prompt="Extract the CPU ...")
     agent.execute_step(obs, robot_client)
 """
 

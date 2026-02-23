@@ -769,8 +769,8 @@ def main(args: Args):
             obs_client=obs_client,
             relative_counts=skill_rel_counts,
             grasp_thresholds={"cpu": 158, "ram": 226},
-            move_speed=args.task_move_speed,
-            move_accel=args.task_move_accel,
+            move_speed=args.skill_move_speed,
+            move_accel=args.skill_move_accel,
         )
 
     # ------------------------------------------------------------------
