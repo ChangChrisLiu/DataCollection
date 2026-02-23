@@ -809,11 +809,14 @@ Features:
 ├── experiments/                      # Launch scripts
 │   ├── launch_nodes.py               # T1: Robot ZMQ server (dual-port)
 │   ├── launch_camera_nodes.py        # T2: Camera PUB/SUB publishers
-│   └── run_collection.py             # T3: Unified collection pipeline (200Hz control / 30Hz record)
+│   ├── run_collection.py             # T3: Unified collection pipeline (200Hz control / 30Hz record)
+│   └── run_inference.py              # T4: VLA inference pipeline (server-client, all 3 backends)
 ├── gello/
 │   ├── agents/                       # Control agents
 │   │   ├── agent.py                  # Agent protocol (Action type)
 │   │   ├── joystick_agent.py         # HOSAS dual-stick (velocity + interrupt)
+│   │   ├── vla_agent.py              # VLA model agent + 3 backend adapters (OpenPI/OpenVLA/OFT)
+│   │   ├── safety.py                 # Workspace/joint/velocity safety checks for VLA inference
 │   │   ├── gello_agent.py            # GELLO Dynamixel (joint-space)
 │   │   ├── spacemouse_agent.py       # 3Dconnexion SpaceMouse
 │   │   └── zmq_agent.py              # ZMQ client wrapper
@@ -1442,6 +1445,211 @@ State and images should be sent **unnormalized** — the server handles normaliz
 | GRACE: `uv` resolution error | `export UV_FROZEN=1` in SLURM script AND `~/.bashrc` |
 | GRACE: GCS checkpoint download fails | `gcsfs`/`aiohttp` ignores `http_proxy`. Pre-download on login node — see `SERVER_SETUP_HPRC.md` Step 5 |
 | GRACE: `Disk quota exceeded` | HF datasets Arrow cache on scratch. Set `HF_HOME` to scratch, clean: `find $SCRATCH -name '*.arrow' -path '*/cache/*' -delete` |
+
+---
+
+## Inference Pipeline
+
+Deploy trained VLA models on the UR5e for performance validation. The inference script (`experiments/run_inference.py`) mirrors `run_collection.py` but replaces human joystick input with model predictions.
+
+### Environment Architecture
+
+All three backends use a **server-client architecture** so `run_inference.py` always runs from the `tele` conda env. Each model server runs in its own environment:
+
+| Backend | Model Server Env | Server Script | Client Protocol | Default Port |
+|---------|-----------------|---------------|-----------------|-------------|
+| OpenPI | `uv` venv at `~/openpi/.venv/` | `scripts/serve_policy.py` | WebSocket (`openpi_client`) | 8000 |
+| OpenVLA | `conda activate vla` | `vla-scripts/deploy.py` | REST (`requests` + `json_numpy`) | 8000 |
+| OpenVLA-OFT | `conda activate oft` | `vla-scripts/deploy.py` | REST (`requests` + `json_numpy`) | 8777 |
+
+This design means you **do not need model-specific conda envs in the inference script** — only lightweight client libraries.
+
+### Prerequisites
+
+Install the client dependencies in the `tele` conda env:
+
+```bash
+conda activate tele
+
+# For OpenPI inference (WebSocket client)
+pip install /home/chris/openpi/packages/openpi-client/
+
+# For OpenVLA / OpenVLA-OFT inference (REST client)
+pip install json-numpy requests
+```
+
+### Checkpoint Locations
+
+Checkpoints are saved under each model's own directory:
+
+| Model | Checkpoint Location | Example |
+|-------|-------------------|---------|
+| OpenPI | `~/openpi/checkpoints/<config>/<exp_name>/<step>/` | `~/openpi/checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1/30000/` |
+| OpenVLA | `~/Sibo/openvla/runs/<exp_name>/` | `~/Sibo/openvla/runs/ur5e_planner+b16+lr-5e-4/` |
+| OpenVLA-OFT | `~/Sibo/openvla-oft/runs/<exp_name>/` | `~/Sibo/openvla-oft/runs/ur5e_planner_l1_2img/` |
+
+### Terminal Architecture (Inference)
+
+Four terminals, same as data collection but T3 runs a model server and T4 runs inference:
+
+```
+T1: conda activate tele
+    python experiments/launch_nodes.py --robot ur --robot-ip 10.125.144.209
+
+T2: conda activate tele
+    python experiments/launch_camera_nodes.py --camera-settings configs/camera_settings.json
+
+T3: Start model server (see per-backend commands below)
+
+T4: conda activate tele
+    python experiments/run_inference.py --model-type <backend> --server-port <port> \
+        --prompt "pick up the cpu" --mode planner --skill cpu
+```
+
+### Starting Model Servers (T3)
+
+#### OpenPI Server
+
+```bash
+cd /home/chris/openpi
+
+# Planner model
+uv run scripts/serve_policy.py policy:checkpoint \
+    --policy.config pi05_droid_ur5e_planner_lora_10hz \
+    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1/30000 \
+    --port 8000
+
+# Correction model (separate terminal, different port)
+uv run scripts/serve_policy.py policy:checkpoint \
+    --policy.config pi05_droid_ur5e_correction_lora_10hz \
+    --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_10hz/correction_v1/30000 \
+    --port 8001
+```
+
+#### OpenVLA Server
+
+```bash
+conda activate vla
+cd /home/chris/Sibo/openvla
+
+python vla-scripts/deploy.py \
+    --pretrained_checkpoint runs/ur5e_planner+b16+lr-5e-4 \
+    --port 8000
+```
+
+#### OpenVLA-OFT Server
+
+```bash
+conda activate oft
+cd /home/chris/Sibo/openvla-oft
+
+python vla-scripts/deploy.py \
+    --pretrained_checkpoint runs/ur5e_planner_l1_2img \
+    --unnorm_key ur5e_vla_planner_10hz \
+    --use_l1_regression True \
+    --use_proprio True \
+    --num_images_in_input 2 \
+    --port 8777
+```
+
+### Running Inference (T4)
+
+#### Planner Mode (approach → skill → correction → skill_resume)
+
+```bash
+conda activate tele
+
+# OpenPI planner (with correction model on port 8001)
+python experiments/run_inference.py \
+    --model-type openpi \
+    --server-port 8000 \
+    --prompt "pick up the cpu" \
+    --mode planner \
+    --skill cpu \
+    --fps 10 \
+    --correction-server-port 8001
+
+# OpenVLA planner (no correction model)
+python experiments/run_inference.py \
+    --model-type openvla \
+    --server-port 8000 \
+    --prompt "pick up the cpu" \
+    --mode planner \
+    --skill cpu \
+    --fps 10
+
+# OpenVLA-OFT planner
+python experiments/run_inference.py \
+    --model-type openvla_oft \
+    --server-port 8777 \
+    --prompt "pick up the cpu" \
+    --mode planner \
+    --skill cpu \
+    --fps 10
+```
+
+#### E2E Mode (model handles entire trajectory)
+
+```bash
+# OpenPI e2e
+python experiments/run_inference.py \
+    --model-type openpi \
+    --server-port 8000 \
+    --prompt "pick up the cpu" \
+    --mode e2e \
+    --fps 10 \
+    --max-steps 500
+```
+
+### Action Application Summary
+
+| Model | `infer()` returns | `apply_action()` | Robot command |
+|-------|-------------------|-------------------|---------------|
+| OpenPI | Chunk of 10 actions `(7,)`: absolute `[q0-q5, gripper]` | `target → servoJ` | `command_joint_state(target)` |
+| OpenVLA | Single action `(7,)`: delta `[dx,dy,dz,dr,dp,dy, grip_inv]` | `current_tcp + delta → moveL` | `move_linear(pose)` + `set_gripper()` |
+| OpenVLA-OFT | Chunk of 8 actions `(7,)`: same as OpenVLA | Same as OpenVLA | Same as OpenVLA |
+
+### Stop Signal Detection
+
+| Model | Training Convention | Stop Detection |
+|-------|-------------------|----------------|
+| OpenPI | gripper=1.0 (absolute, no inversion) | `action[6] > 0.95` |
+| OpenVLA | gripper inverted (1=open, 0=close) | `action[6] < 0.05` |
+| OpenVLA-OFT | Same as OpenVLA | `action[6] < 0.05` |
+
+Physical gripper range: 3-230 (normalized 0.012-0.902). Stop thresholds give wide margin above/below the physical range.
+
+### CLI Reference
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--model-type` | `openpi` | Backend: `openpi`, `openvla`, or `openvla_oft` |
+| `--server-host` | `127.0.0.1` | Model server host |
+| `--server-port` | `8000` | Model server port |
+| `--prompt` | `pick up the cpu` | Language instruction |
+| `--mode` | `planner` | Pipeline mode: `planner` or `e2e` |
+| `--skill` | `cpu` | Skill for planner mode: `cpu` or `ram` |
+| `--fps` | `10` | Control rate (must match training FPS) |
+| `--max-steps` | `300` | Timeout in inference steps |
+| `--correction-server-port` | `0` | Correction model server port (0 = disabled) |
+| `--open-loop-horizon` | `10` | OpenPI: chunk steps to use before re-querying |
+| `--unnorm-key` | `ur5e_vla_planner_10hz` | OpenVLA/OFT normalization stats key |
+| `--record` / `--no-record` | `True` | Record episodes for evaluation |
+| `--data-dir` | `data/inference_episodes` | Output directory |
+| `--disable-safety` | `False` | Disable workspace/velocity safety checks |
+
+### Safety Monitor
+
+The inference pipeline includes a `SafetyMonitor` (`gello/agents/safety.py`) that clamps actions before execution:
+
+| Check | Limit | Applied To |
+|-------|-------|------------|
+| Max joint delta | 0.05 rad/step | OpenPI (servoJ) |
+| Max EEF delta | 0.01 m/step | OpenVLA, OFT (moveL) |
+| Max rotation delta | 0.05 rad/step | OpenVLA, OFT (moveL) |
+| Workspace bounds | Configurable | All (target pose check) |
+
+Disable with `--disable-safety` for unconstrained execution (not recommended for initial testing).
 
 ---
 
