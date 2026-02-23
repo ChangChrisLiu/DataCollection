@@ -7,11 +7,11 @@
 # Groups (same dataset + same norm type = identical stats):
 #   Pi0 (z-score):       6 datasets -> 6 unique computations
 #   Pi0-FAST (quantile): 6 datasets -> 6 unique computations
-#   Pi0.5-base (quantile): 6 datasets -> same as Pi0-FAST (can symlink)
-#   Pi0.5-DROID (quantile): 6 datasets -> same as Pi0-FAST (can symlink)
+#   Pi0.5-base (quantile): 6 datasets -> same as Pi0-FAST (symlink)
+#   Pi0.5-DROID (quantile): 6 datasets -> same as Pi0-FAST (symlink)
 #
 # Minimum unique computations: 12 (6 z-score + 6 quantile)
-# With symlinks, only ~4 hours instead of ~15 hours.
+# After this script, run symlinks from SERVER_SETUP_HPRC.md Step 4.
 
 set -e
 cd "$(dirname "$0")/.."
@@ -41,6 +41,6 @@ for config in "${CONFIGS[@]}"; do
 done
 
 echo ""
-echo "Done! Now symlink identical stats for full-finetune configs:"
-echo "  Full finetune configs share stats with their LoRA counterpart."
-echo "  e.g., cd assets && ln -sf pi0_ur5e_planner_lora_10hz pi0_ur5e_planner_10hz"
+echo "Done! Now create symlinks for all other configs:"
+echo "  cd assets && ln -sf pi0_ur5e_planner_lora_10hz pi0_ur5e_planner_10hz"
+echo "  See SERVER_SETUP_HPRC.md Step 4 for the complete symlink commands."
