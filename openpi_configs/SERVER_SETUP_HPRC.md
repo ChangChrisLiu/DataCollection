@@ -247,6 +247,7 @@ Create `$SCRATCH/openpi/compute_stats.slurm`:
 #SBATCH --job-name=ur5e_norm_stats
 #SBATCH --time=8:00:00
 #SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --partition=gpu
@@ -473,6 +474,7 @@ Create `$SCRATCH/openpi/validate.slurm`:
 #SBATCH --job-name=ur5e_validate
 #SBATCH --time=00:30:00
 #SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --partition=gpu
@@ -513,6 +515,7 @@ Create `$SCRATCH/openpi/train_ur5e.slurm`:
 #SBATCH --job-name=ur5e_lora
 #SBATCH --time=48:00:00
 #SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
 #SBATCH --gres=gpu:1
 #SBATCH --partition=gpu
@@ -557,6 +560,7 @@ Grace has max 2 GPUs per node. For full finetune (batch_size=256):
 #SBATCH --job-name=ur5e_full
 #SBATCH --time=48:00:00
 #SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
 #SBATCH --gres=gpu:2
 #SBATCH --partition=gpu
