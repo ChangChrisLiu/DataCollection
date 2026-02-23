@@ -4,6 +4,9 @@
 Parses episode_meta.json files written by run_inference.py and prints
 a summary table grouped by (model_type, checkpoint_name, mode, task).
 
+Success is determined by the ``human_label`` field (set by the operator
+after each episode), not by automated skill outcomes.
+
 Usage:
     python scripts/eval_summary.py --data-dir data/inference_episodes
     python scripts/eval_summary.py --data-dir data/inference_episodes --csv results.csv
@@ -17,8 +20,6 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
-
-SUCCESS_OUTCOMES = {"completed", "completed_after_correction", "stop_signal"}
 
 
 def load_episodes(data_dir: str):
@@ -36,7 +37,7 @@ def load_episodes(data_dir: str):
 
 
 def summarize(episodes):
-    """Group episodes and compute success rates.
+    """Group episodes and compute success rates from human labels.
 
     Returns list of dicts with columns for the summary table.
     """
@@ -53,12 +54,17 @@ def summarize(episodes):
     rows = []
     for (model, ckpt, mode, task), eps in sorted(groups.items()):
         n = len(eps)
+
+        # Human labels
+        labeled = [ep for ep in eps if "human_label" in ep]
+        n_labeled = len(labeled)
+        n_success = sum(1 for ep in labeled if ep["human_label"] is True)
+        rate = (n_success / n_labeled * 100) if n_labeled > 0 else 0.0
+
+        # Automated outcome breakdown (informational)
         outcomes = defaultdict(int)
         for ep in eps:
             outcomes[ep.get("skill_outcome", "unknown")] += 1
-
-        success = sum(outcomes[o] for o in SUCCESS_OUTCOMES)
-        rate = (success / n * 100) if n > 0 else 0.0
 
         rows.append(
             {
@@ -67,14 +73,13 @@ def summarize(episodes):
                 "mode": mode or "(none)",
                 "task": task,
                 "n": n,
-                "success": success,
+                "labeled": n_labeled,
+                "success": n_success,
                 "rate": rate,
                 "timeout": outcomes.get("timeout", 0)
                 + outcomes.get("correction_timeout", 0),
                 "grasp_fail": outcomes.get("grasp_failed_no_correction", 0),
-                "corrected": outcomes.get("completed_after_correction", 0),
                 "estop": outcomes.get("estop", 0),
-                "interrupted": outcomes.get("interrupted", 0),
             }
         )
     return rows
@@ -92,11 +97,11 @@ def print_table(rows):
         ("Mode", "mode", 9),
         ("Task", "task", 6),
         ("N", "n", 4),
+        ("Labeled", "labeled", 7),
         ("OK", "success", 4),
         ("Rate", "rate", 7),
         ("Timeout", "timeout", 7),
         ("GraspFail", "grasp_fail", 9),
-        ("Corrected", "corrected", 9),
         ("EStop", "estop", 5),
     ]
 

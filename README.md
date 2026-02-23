@@ -1759,6 +1759,18 @@ python experiments/run_inference.py \
     --server-port 8000
 ```
 
+### Human Evaluation Label
+
+After each episode (including e-stops), the script prompts the operator:
+
+```
+  Was this episode successful? (y/n):
+```
+
+The response is stored as `human_label` (true/false) in `episode_meta.json`. This is the **ground truth** for evaluation — automated outcomes like `skill_outcome` only describe what happened mechanically (e.g. "the skill ran and the gripper closed"), not whether the model actually performed correctly. For example, a planner might trigger the skill from a wrong position — the skill runs but fails, or even succeeds by luck. Only the human operator can judge whether the model's behavior was correct.
+
+Press Ctrl+C during the prompt to skip labeling (the episode is already saved).
+
 ### Episode Metadata (Inference)
 
 Each inference episode saves an `episode_meta.json` with all tracking fields:
@@ -1767,6 +1779,7 @@ Each inference episode saves an `episode_meta.json` with all tracking fields:
 {
     "skill_name": "cpu",
     "skill_outcome": "completed",
+    "human_label": true,
     "model_type": "openpi",
     "prompt": "Extract the CPU from the Bracket...",
     "checkpoint_name": "pi05d_planner_v1_34k",
@@ -1781,9 +1794,12 @@ Each inference episode saves an `episode_meta.json` with all tracking fields:
 }
 ```
 
+- `human_label` — **ground truth** success/failure as judged by the operator
+- `skill_outcome` — mechanical outcome (informational, not used for success rates)
+
 Possible `skill_outcome` values:
-- `"completed"` — skill finished successfully
-- `"completed_after_correction"` — grasp failed, correction model repositioned, skill resumed and completed
+- `"completed"` — skill finished all waypoints
+- `"completed_after_correction"` — grasp failed, correction ran, skill resumed and completed
 - `"stop_signal"` — e2e mode, model emitted stop signal
 - `"timeout"` — max steps reached without stop signal
 - `"correction_timeout"` — correction model timed out without stop signal
@@ -1819,15 +1835,17 @@ Output:
 ```
 Found 40 episodes in data/inference_episodes
 
-Model        | Checkpoint               | Mode      | Task   | N    | OK   | Rate    | Timeout | GraspFail | Corrected | EStop
-------------------------------------------------------------------------------------------------------------------------------
-openpi       | pi05d_planner_v1_34k     | planner   | cpu    |   10 |    7 |  70.0%  |       2 |         1 |         2 |     0
-openpi       | pi05d_planner_v1_34k     | planner   | ram    |   10 |    8 |  80.0%  |       1 |         1 |         3 |     0
-openvla      | vla_planner_v1           | planner   | cpu    |   10 |    5 |  50.0%  |       3 |         2 |         0 |     0
-openvla_oft  | oft_planner_v1           | planner   | cpu    |   10 |    6 |  60.0%  |       2 |         2 |         1 |     0
+Model        | Checkpoint               | Mode      | Task   | N    | Labeled | OK   | Rate    | Timeout | GraspFail | EStop
+-----------------------------------------------------------------------------------------------------------------------------
+openpi       | pi05d_planner_v1_34k     | planner   | cpu    |   10 |      10 |    7 |  70.0%  |       2 |         1 |     0
+openpi       | pi05d_planner_v1_34k     | planner   | ram    |   10 |      10 |    8 |  80.0%  |       1 |         1 |     0
+openvla      | vla_planner_v1           | planner   | cpu    |   10 |      10 |    5 |  50.0%  |       3 |         2 |     0
+openvla_oft  | oft_planner_v1           | planner   | cpu    |   10 |      10 |    6 |  60.0%  |       2 |         2 |     0
 ```
 
-The script recurses into subdirectories, groups by `(model_type, checkpoint_name, mode, task)`, and counts successes. An episode is considered successful if its outcome is `"completed"`, `"completed_after_correction"`, or `"stop_signal"`.
+- **OK / Rate** — based on `human_label` (operator judgment), not automated outcomes
+- **Labeled** — how many episodes have a human label (unlabeled episodes are excluded from the rate)
+- **Timeout / GraspFail / EStop** — automated outcome breakdown (informational)
 
 The `--csv` flag writes the same table as a CSV file for further analysis (e.g. plotting success rate curves across checkpoints).
 

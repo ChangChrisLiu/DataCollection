@@ -330,6 +330,50 @@ def get_obs(robot_client, camera_clients) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Human evaluation label
+# ---------------------------------------------------------------------------
+
+
+def _prompt_human_label(episode_dir) -> None:
+    """Ask the operator to label whether the episode was successful.
+
+    Writes ``human_label`` (true/false) into the existing episode_meta.json.
+    Ctrl+C during the prompt skips labeling (field remains absent).
+    """
+    import json
+    from pathlib import Path
+
+    meta_path = Path(episode_dir) / "episode_meta.json"
+    if not meta_path.exists():
+        return
+
+    print()
+    try:
+        while True:
+            ans = input("  Was this episode successful? (y/n): ").strip().lower()
+            if ans in ("y", "yes"):
+                label = True
+                break
+            elif ans in ("n", "no"):
+                label = False
+                break
+            print("  Please enter y or n.")
+    except (KeyboardInterrupt, EOFError):
+        print("\n  Skipping label.")
+        return
+
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+        meta["human_label"] = label
+        with open(meta_path, "w") as f:
+            json.dump(meta, f, indent=2, default=str)
+        print(f"  Labeled: {'success' if label else 'failure'}")
+    except Exception as e:
+        print(f"  Failed to update metadata: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Save and go home
 # ---------------------------------------------------------------------------
 
@@ -353,6 +397,7 @@ def save_and_go_home(
     robot_client.speed_stop()
     rec_mgr.stop()
 
+    episode_dir = None
     if buffer.phase != "idle":
         metadata = buffer.get_metadata()
         frames, segments = buffer.export()
@@ -368,12 +413,18 @@ def save_and_go_home(
             "inference_fps": inference_fps,
             **(grasp_info or {}),
         }
-        writer.save_unified_episode(frames, segments, metadata=episode_meta)
+        episode_dir = writer.save_unified_episode(
+            frames, segments, metadata=episode_meta
+        )
         print(f"[INFERENCE] Recording saved ({len(frames)} frames).")
 
     robot_client.set_gripper_speed(255)
     print("[INFERENCE] Moving to home position...")
     robot_client.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
+
+    # Ask human to label the episode while robot homes
+    if episode_dir is not None:
+        _prompt_human_label(episode_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -952,6 +1003,7 @@ def main(args: Args):
             pass
         rec_mgr.stop()
 
+        episode_dir = None
         if buffer.phase != "idle":
             print("[E-STOP] Saving in-progress recording...")
             metadata = buffer.get_metadata()
@@ -967,7 +1019,9 @@ def main(args: Args):
                 "mode": args.mode,
                 "inference_fps": args.fps,
             }
-            writer.save_unified_episode(frames, segments, metadata=episode_meta)
+            episode_dir = writer.save_unified_episode(
+                frames, segments, metadata=episode_meta
+            )
 
         print("[E-STOP] Moving to home position...")
         try:
@@ -975,6 +1029,9 @@ def main(args: Args):
             robot_client.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
         except Exception:
             pass
+
+        if episode_dir is not None:
+            _prompt_human_label(episode_dir)
 
     print("Inference pipeline exited.")
 
