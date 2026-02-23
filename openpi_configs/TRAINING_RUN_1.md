@@ -178,7 +178,8 @@ Complete ALL steps in [`SERVER_SETUP_HPRC.md`](SERVER_SETUP_HPRC.md) first:
 2. Set environment variables in `~/.bashrc` (including `UV_FROZEN=1` and `WANDB_API_KEY`)
 3. Verify datasets at `$HF_LEROBOT_HOME/ChangChrisLiu/`
 4. Verify norm stats at `$SCRATCH/openpi/assets/`
-5. Pass the Python config import test
+5. **Pre-download tokenizer + checkpoint on login node** (Step 5 in SERVER_SETUP — gcsfs ignores proxy, must pre-cache)
+6. Pass the Python config import test
 
 ## B.2 Quick Validation (5-step test)
 
@@ -352,6 +353,8 @@ Runs from local and GRACE appear side-by-side. Use wandb run names (`planner_v1`
 | **GRACE**: `uv` resolution error | `export UV_FROZEN=1` |
 | **GRACE**: `Unable to initialize backend 'cuda'` | Not on GPU node — use `srun --gres=gpu:1` or `sbatch` |
 | **GRACE**: `FileNotFoundError` for dataset | `HF_LEROBOT_HOME` must be `/scratch/user/changliu.chris` (parent of `ChangChrisLiu/`) |
+| **GRACE**: GCS checkpoint download fails/hangs | `gcsfs`/`aiohttp` ignores `http_proxy`. Pre-download on login node (see SERVER_SETUP Step 5) |
+| **GRACE**: `Disk quota exceeded` | HF datasets cache filling scratch. `find $SCRATCH -name '*.arrow' -path '*/cache/*' -delete` |
 | **Both**: Wandb not logging | Check `WANDB_API_KEY` is set |
 | **Both**: Loss not decreasing | Check norm stats exist. Try `--lr-schedule.peak-lr 1e-5` |
 | **Both**: Want to stop and continue later | Ctrl+C (local) or `scancel` (GRACE). Resume with same `--exp-name`, no `--overwrite` |

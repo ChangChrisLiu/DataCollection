@@ -1430,6 +1430,8 @@ State and images should be sent **unnormalized** — the server handles normaliz
 | Wandb not logging | Set `WANDB_API_KEY` in `~/.bashrc` (v1 keys must use env var, not `wandb login`) |
 | Multi-line commands fail on paste | Use single-line commands. Env vars should be in `~/.bashrc`, not inline |
 | GRACE: `uv` resolution error | `export UV_FROZEN=1` in SLURM script AND `~/.bashrc` |
+| GRACE: GCS checkpoint download fails | `gcsfs`/`aiohttp` ignores `http_proxy`. Pre-download on login node — see `SERVER_SETUP_HPRC.md` Step 5 |
+| GRACE: `Disk quota exceeded` | HF datasets Arrow cache on scratch. Set `HF_HOME` to scratch, clean: `find $SCRATCH -name '*.arrow' -path '*/cache/*' -delete` |
 
 ---
 

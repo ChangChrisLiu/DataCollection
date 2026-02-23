@@ -335,17 +335,87 @@ echo "Created $(ls -l | grep '^l' | wc -l) symlinks"
 
 ---
 
-## Step 5: Quick Validation (Before Real Training)
+## Step 5: Pre-Download Model Files on Login Node
 
-Run a 5-step training test to verify everything works.
+**Critical**: OpenPI downloads model checkpoints from Google Cloud Storage (GCS) using `gcsfs`/`aiohttp`. **`aiohttp` ignores `http_proxy`/`https_proxy` env vars**, so GCS downloads fail on compute nodes even with `module load WebProxy`. The fix is to pre-download everything on a **login node** (which has direct internet access), then compute node jobs find the local cache and skip the network call.
 
-**First-run warning**: The first run downloads the base model checkpoint (~10 GB) from Google Cloud Storage. This can take 10-30+ minutes depending on cluster bandwidth. Subsequent runs use the cached checkpoint at `$OPENPI_DATA_HOME`.
+### 5a. Check Disk Quota
+
+Model checkpoints are ~10 GB each. Check you have space:
+
+```bash
+showquota
+du -sh $SCRATCH/.cache/ 2>/dev/null
+du -sh $SCRATCH/openpi_data/ 2>/dev/null
+```
+
+If quota is tight, clean old caches:
+```bash
+# Remove stale HF datasets Arrow caches
+find $SCRATCH -name "*.arrow" -path "*/cache/*" -delete 2>/dev/null
+# Remove old checkpoint experiments
+rm -rf $SCRATCH/openpi/checkpoints/*/validate/
+```
+
+### 5b. Pre-Download PaliGemma Tokenizer
+
+```bash
+cd $SCRATCH/openpi
+export UV_FROZEN=1
+export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
+
+uv run python -c "
+from transformers import AutoTokenizer
+AutoTokenizer.from_pretrained('google/paligemma-3b-pt-224')
+print('Tokenizer cached successfully')
+"
+```
+
+Verify: `ls $HF_HOME/hub/models--google--paligemma-3b-pt-224/`
+
+### 5c. Pre-Download Model Checkpoint
+
+Download only the checkpoint for the model you plan to train. Each is ~10 GB, takes 10-30 minutes.
+
+```bash
+cd $SCRATCH/openpi
+export UV_FROZEN=1
+export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
+
+# Pi0.5-DROID (recommended first — used in Training Run 1)
+uv run python -c "
+from openpi.shared.download import maybe_download
+maybe_download('gs://openpi-assets/checkpoints/pi05_droid/params')
+print('pi05_droid checkpoint cached')
+"
+```
+
+Verify: `ls $OPENPI_DATA_HOME/openpi-assets/checkpoints/pi05_droid/params/`
+
+**Other model checkpoints** (download as needed):
+```bash
+# Pi0 base (~10 GB)
+uv run python -c "from openpi.shared.download import maybe_download; maybe_download('gs://openpi-assets/checkpoints/pi0_base/params')"
+
+# Pi0-FAST base (~10 GB)
+uv run python -c "from openpi.shared.download import maybe_download; maybe_download('gs://openpi-assets/checkpoints/pi0_fast_base/params')"
+
+# Pi0.5 base (~10 GB)
+uv run python -c "from openpi.shared.download import maybe_download; maybe_download('gs://openpi-assets/checkpoints/pi05_base/params')"
+```
+
+**Why login node works**: Login nodes (grace4, grace5) have direct internet access. The `maybe_download` function caches to `$OPENPI_DATA_HOME/openpi-assets/checkpoints/`. Once cached, `maybe_download` returns the local path without any network call.
+
+---
+
+## Step 6: Quick Validation (Before Real Training)
+
+Run a 5-step training test to verify everything works. **Model checkpoint and tokenizer must already be cached** (Step 5) — compute nodes cannot download them.
 
 ### Option A: Interactive GPU Session
 
 ```bash
-# Request interactive GPU session on Grace (2 hours for first-run download)
-srun --gres=gpu:1 --mem=64G --time=02:00:00 --partition=gpu --pty bash
+srun --gres=gpu:1 --mem=64G --time=00:30:00 --partition=gpu --pty bash
 
 # Once on the GPU node:
 cd $SCRATCH/openpi
@@ -357,8 +427,7 @@ uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
     --no-wandb-enabled \
     --overwrite
 
-# First run: ~15-30 min (checkpoint download). After that: ~2-3 min.
-# Should print loss values (~1.4)
+# Should complete in ~2-3 min, print loss values (~1.4)
 ```
 
 ### Option B: SLURM Batch Job
@@ -368,7 +437,7 @@ Create `$SCRATCH/openpi/validate.slurm`:
 ```bash
 #!/bin/bash
 #SBATCH --job-name=ur5e_validate
-#SBATCH --time=02:00:00
+#SBATCH --time=00:30:00
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
@@ -399,7 +468,7 @@ sbatch validate.slurm
 
 ---
 
-## Step 6: Training
+## Step 7: Training
 
 ### LoRA Fine-Tuning (Single GPU)
 
@@ -506,7 +575,7 @@ showquota
 
 ---
 
-## Step 7: Resume / Continue Training
+## Step 8: Resume / Continue Training
 
 Remove `--overwrite` to auto-resume from the latest checkpoint:
 
@@ -574,8 +643,10 @@ pi0_ur5e, pi0_ur5e_lora, pi0_fast_ur5e, pi0_fast_ur5e_lora
 | `Unable to initialize backend 'cuda'` | Not on a GPU node — use `srun --gres=gpu:1` or submit via `sbatch` |
 | numpy version conflict | `uv pip install numpy==1.26.4` (already fixed) |
 | Slow first run | First run downloads ~10 GB base checkpoint from GCS to `$OPENPI_DATA_HOME`. This is a one-time cost per model. |
-| Checkpoint download hangs/fails | Set `http_proxy` and `https_proxy` — Grace compute nodes have NO internet without proxy |
-| Wandb fails to connect | Same proxy issue — must set `http_proxy`/`https_proxy` in SLURM script |
+| GCS checkpoint download fails on compute node | `gcsfs`/`aiohttp` ignores `http_proxy` env vars. **Pre-download on login node** (Step 5) — `maybe_download` caches locally, compute nodes use cache |
+| `OSError: paligemma_tokenizer` not found | Tokenizer not cached. Pre-download on login node: `uv run python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('google/paligemma-3b-pt-224')"` |
+| `Disk quota exceeded` during training | HF datasets Arrow cache filling scratch. Set `HF_HOME` to scratch, clean: `find $SCRATCH -name '*.arrow' -path '*/cache/*' -delete` |
+| Wandb fails to connect | `module load WebProxy` in SLURM script — wandb uses `requests` which respects proxy (unlike gcsfs) |
 | Job killed (time limit) | Increase `--time` in SLURM. Resume with same `--exp-name` without `--overwrite`. |
 | `showquota` shows full | Clean old checkpoints: `rm -rf $SCRATCH/openpi/checkpoints/<old_exp>` |
 | Login node: no GPU | Grace login nodes (grace4, grace5) have no GPUs. Use `srun` or `sbatch` for GPU work. |
@@ -591,6 +662,7 @@ pi0_ur5e, pi0_ur5e_lora, pi0_fast_ur5e, pi0_fast_ur5e_lora
 3. Verify upload: Python import test on login node      (Step 3)
 4. Submit norm stats SLURM job                          (Step 4)
 5. After stats complete: create symlinks                (Step 4)
-6. Quick 5-step validation (interactive or batch)       (Step 5)
-7. Submit real training jobs                            (Step 6)
+6. Pre-download tokenizer + checkpoint on login node    (Step 5) ← CRITICAL
+7. Quick 5-step validation (interactive or batch)       (Step 6)
+8. Submit real training jobs                            (Step 7)
 ```
