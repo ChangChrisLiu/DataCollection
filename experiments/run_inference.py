@@ -21,7 +21,7 @@ Terminal architecture:
   T1: python experiments/launch_nodes.py --robot ur
   T2: python experiments/launch_camera_nodes.py --camera-settings camera_settings.json
   T3: Start model server (see README § Inference Pipeline for per-backend commands)
-  T4: python experiments/run_inference.py --model-type openpi --prompt "pick up the cpu"
+  T4: python experiments/run_inference.py --model-type openpi --task cpu
 
 Ctrl+C to e-stop the robot and save the current episode.
 """
@@ -149,20 +149,18 @@ class Args:
     # --- Model config ---
     model_type: str = "openpi"
     """Model backend: "openpi", "openvla", or "openvla_oft"."""
-    prompt: str = ""
-    """Language instruction. Auto-detected from --skill if empty (recommended)."""
+
+    # --- Task (drives both skill executor and language prompt) ---
+    task: str = "cpu"
+    """Task to perform: "cpu" or "ram". Sets the language prompt and skill CSV."""
+    mode: str = "planner"
+    """Pipeline mode: "planner" (approach + skill + correction) or "e2e"."""
 
     # --- Server connection ---
     server_host: str = "127.0.0.1"
     """Host for the model server (shared for all backends)."""
     server_port: int = 8000
     """Port for the model server. Defaults: OpenPI=8000, OpenVLA=8000, OFT=8777."""
-
-    # --- Task mode ---
-    mode: str = "planner"
-    """Pipeline mode: "planner" (approach + skill + correction) or "e2e"."""
-    skill: str = "cpu"
-    """Which CSV skill for planner mode: "cpu" or "ram"."""
 
     # --- Timing ---
     fps: int = 10
@@ -370,6 +368,7 @@ def run_planner_mode(
     buffer: EpisodeBuffer,
     writer: DatasetWriter,
     rec_mgr: RecordingThreadManager,
+    prompt: str = "",
 ):
     """Planner inference → skill execution → optional correction → skill_resume."""
 
@@ -426,8 +425,8 @@ def run_planner_mode(
         print(f"\n[PLANNER] Max steps ({args.max_steps}) reached without stop signal")
         save_and_go_home(
             robot_client, buffer, writer, rec_mgr,
-            skill_name=args.skill, outcome="timeout",
-            model_type=args.model_type, prompt=args.prompt,
+            skill_name=args.task, outcome="timeout",
+            model_type=args.model_type, prompt=prompt,
         )
         return
 
@@ -452,9 +451,9 @@ def run_planner_mode(
         rec_mgr.stop()
         print("\n[PIPELINE] Grasp failed — correction model needed")
 
-    print(f"[PIPELINE] Executing skill '{args.skill}'...")
+    print(f"[PIPELINE] Executing skill '{args.task}'...")
     completed, grasp_info = skill_executor.execute(
-        args.skill,
+        args.task,
         trigger_tcp_raw=trigger_tcp,
         interrupt_event=interrupt_event,
         on_grasp_failed=on_grasp_failed,
@@ -465,9 +464,9 @@ def run_planner_mode(
         print("[PIPELINE] Skill completed successfully!")
         save_and_go_home(
             robot_client, buffer, writer, rec_mgr,
-            skill_name=args.skill, outcome="completed",
+            skill_name=args.task, outcome="completed",
             grasp_info=grasp_info,
-            model_type=args.model_type, prompt=args.prompt,
+            model_type=args.model_type, prompt=prompt,
         )
         return
 
@@ -477,9 +476,9 @@ def run_planner_mode(
         print("[PIPELINE] Skill interrupted — saving episode")
         save_and_go_home(
             robot_client, buffer, writer, rec_mgr,
-            skill_name=args.skill, outcome="interrupted",
+            skill_name=args.task, outcome="interrupted",
             grasp_info=grasp_info,
-            model_type=args.model_type, prompt=args.prompt,
+            model_type=args.model_type, prompt=prompt,
         )
         return
 
@@ -490,9 +489,9 @@ def run_planner_mode(
         print("[PIPELINE] No correction model configured — saving failed episode")
         save_and_go_home(
             robot_client, buffer, writer, rec_mgr,
-            skill_name=args.skill, outcome="grasp_failed_no_correction",
+            skill_name=args.task, outcome="grasp_failed_no_correction",
             grasp_info=grasp_info,
-            model_type=args.model_type, prompt=args.prompt,
+            model_type=args.model_type, prompt=prompt,
         )
         return
 
@@ -541,9 +540,9 @@ def run_planner_mode(
         print(f"\n[CORRECTION] Max steps reached without stop signal")
         save_and_go_home(
             robot_client, buffer, writer, rec_mgr,
-            skill_name=args.skill, outcome="correction_timeout",
+            skill_name=args.task, outcome="correction_timeout",
             grasp_info=grasp_info,
-            model_type=args.model_type, prompt=args.prompt,
+            model_type=args.model_type, prompt=prompt,
         )
         return
 
@@ -559,7 +558,7 @@ def run_planner_mode(
 
     print("[PIPELINE] Resuming skill (absolute waypoints only)...")
     completed, resume_info = skill_executor.execute(
-        args.skill,
+        args.task,
         interrupt_event=interrupt_event,
         resume_absolute_only=True,
     )
@@ -570,9 +569,9 @@ def run_planner_mode(
     print(f"[PIPELINE] Skill resume {'completed' if completed else 'failed'}.")
     save_and_go_home(
         robot_client, buffer, writer, rec_mgr,
-        skill_name=args.skill, outcome=outcome,
+        skill_name=args.task, outcome=outcome,
         grasp_info=grasp_info,
-        model_type=args.model_type, prompt=args.prompt,
+        model_type=args.model_type, prompt=prompt,
     )
 
 
@@ -589,6 +588,7 @@ def run_e2e_mode(
     buffer: EpisodeBuffer,
     writer: DatasetWriter,
     rec_mgr: RecordingThreadManager,
+    prompt: str = "",
 ):
     """E2E inference — model handles entire trajectory until timeout."""
     buffer.start()
@@ -640,7 +640,7 @@ def run_e2e_mode(
     save_and_go_home(
         robot_client, buffer, writer, rec_mgr,
         skill_name="e2e", outcome=outcome,
-        model_type=args.model_type, prompt=args.prompt,
+        model_type=args.model_type, prompt=prompt,
     )
 
 
@@ -667,21 +667,25 @@ TASK_INSTRUCTIONS = {
 
 
 def main(args: Args):
-    # Auto-detect prompt from skill if not explicitly provided
-    if not args.prompt:
-        args.prompt = TASK_INSTRUCTIONS.get(args.skill, args.skill)
+    # Resolve prompt from task — single source of truth
+    prompt = TASK_INSTRUCTIONS.get(args.task)
+    if prompt is None:
+        raise ValueError(
+            f"Unknown task: {args.task!r}. "
+            f"Must be one of: {', '.join(TASK_INSTRUCTIONS.keys())}"
+        )
 
     print("=" * 60)
     print("  VLA INFERENCE PIPELINE")
     print("=" * 60)
     print(f"  Model:    {args.model_type}")
     print(f"  Server:   {args.server_host}:{args.server_port}")
+    print(f"  Task:     {args.task}")
     print(f"  Mode:     {args.mode}")
-    print(f"  Prompt:   {args.prompt}")
+    print(f"  Prompt:   {prompt}")
     print(f"  FPS:      {args.fps} Hz")
     print(f"  Max steps: {args.max_steps}")
     if args.mode == "planner":
-        print(f"  Skill:    {args.skill}")
         if args.correction_server_port > 0:
             print(f"  Correction: {args.server_host}:{args.correction_server_port}")
         else:
@@ -729,7 +733,7 @@ def main(args: Args):
     # ------------------------------------------------------------------
     # 4. Create VLA agent
     # ------------------------------------------------------------------
-    agent = VLAAgent(adapter, args.fps, args.prompt, safety)
+    agent = VLAAgent(adapter, args.fps, prompt, safety)
 
     # ------------------------------------------------------------------
     # 5. Create correction agent (planner mode only)
@@ -742,7 +746,7 @@ def main(args: Args):
             port_override=args.correction_server_port,
         )
         correction_agent = VLAAgent(
-            correction_adapter, args.fps, args.prompt, safety,
+            correction_adapter, args.fps, prompt, safety,
         )
         print("[INIT] Correction adapter ready.")
 
@@ -765,8 +769,8 @@ def main(args: Args):
             obs_client=obs_client,
             relative_counts=skill_rel_counts,
             grasp_thresholds={"cpu": 158, "ram": 226},
-            move_speed=args.skill_move_speed,
-            move_accel=args.skill_move_accel,
+            move_speed=args.task_move_speed,
+            move_accel=args.task_move_accel,
         )
 
     # ------------------------------------------------------------------
@@ -794,12 +798,14 @@ def main(args: Args):
                 args, agent, correction_agent,
                 robot_client, obs_client, camera_clients,
                 skill_executor, buffer, writer, rec_mgr,
+                prompt=prompt,
             )
         elif args.mode == "e2e":
             run_e2e_mode(
                 args, agent,
                 robot_client, camera_clients,
                 buffer, writer, rec_mgr,
+                prompt=prompt,
             )
         else:
             raise ValueError(f"Unknown mode: {args.mode}")
@@ -818,10 +824,10 @@ def main(args: Args):
             frames, segments = buffer.export()
             episode_meta = {
                 **metadata,
-                "skill_name": args.skill if args.mode == "planner" else "e2e",
+                "skill_name": args.task if args.mode == "planner" else "e2e",
                 "skill_outcome": "estop",
                 "model_type": args.model_type,
-                "prompt": args.prompt,
+                "prompt": prompt,
             }
             writer.save_unified_episode(frames, segments, metadata=episode_meta)
 

@@ -1503,7 +1503,7 @@ T3: Start model server (see per-backend commands below)
 
 T4: conda activate tele
     python experiments/run_inference.py --model-type <backend> --server-port <port> \
-        --mode planner --skill cpu
+        --mode planner --task cpu
 ```
 
 ### Starting Model Servers (T3)
@@ -1564,7 +1564,7 @@ python experiments/run_inference.py \
     --model-type openpi \
     --server-port 8000 \
     --mode planner \
-    --skill cpu \
+    --task cpu \
     --fps 10 \
     --correction-server-port 8001
 
@@ -1573,7 +1573,7 @@ python experiments/run_inference.py \
     --model-type openvla \
     --server-port 8000 \
     --mode planner \
-    --skill cpu \
+    --task cpu \
     --fps 10
 
 # OpenVLA-OFT planner
@@ -1581,29 +1581,29 @@ python experiments/run_inference.py \
     --model-type openvla_oft \
     --server-port 8777 \
     --mode planner \
-    --skill cpu \
+    --task cpu \
     --fps 10
 ```
 
 #### E2E Mode (model handles entire trajectory)
 
 ```bash
-# OpenPI e2e (prompt auto-detected from --skill)
+# OpenPI e2e (prompt auto-detected from --task)
 python experiments/run_inference.py \
     --model-type openpi \
     --server-port 8000 \
     --mode e2e \
-    --skill cpu \
+    --task cpu \
     --fps 10 \
     --max-steps 500
 ```
 
 ### Language Instructions (Prompt Handling)
 
-The `--prompt` is **auto-detected** from `--skill` if not explicitly provided. This matches the exact strings used during training data conversion:
+The `--task` flag is the **single source of truth** — it sets both the CSV skill and the language instruction. The prompt matches the exact strings used during training data conversion (`conversion_utils.py`):
 
-| Skill | Instruction (from `conversion_utils.py`) |
-|-------|----------------------------------------|
+| `--task` | Language Instruction Sent to Model |
+|----------|-----------------------------------|
 | `cpu` | "Extract the CPU from the Bracket by unlocking it first, then extract the CPU and place it inside the yellow square area, then back home." |
 | `ram` | "Extract the RAM from the slot and place it inside the blue square area, then back home." |
 
@@ -1615,7 +1615,7 @@ Each model server wraps the prompt differently:
 | **OpenVLA** | `{"instruction": "<instruction>"}` | Wraps as `"In: What action should the robot take to <instruction>?\nOut:"` |
 | **OpenVLA-OFT** | `{"instruction": "<instruction>"}` | Same wrapping as OpenVLA |
 
-You only need to provide the raw instruction — the server handles any model-specific prompt formatting. Override with `--prompt "custom text"` if needed.
+You only need to specify `--task cpu` or `--task ram` — the correct prompt and skill CSV are selected automatically. The server handles any model-specific prompt formatting.
 
 ### Action Application Summary
 
@@ -1642,9 +1642,8 @@ Physical gripper range: 3-230 (normalized 0.012-0.902). Stop thresholds give wid
 | `--model-type` | `openpi` | Backend: `openpi`, `openvla`, or `openvla_oft` |
 | `--server-host` | `127.0.0.1` | Model server host |
 | `--server-port` | `8000` | Model server port |
-| `--prompt` | auto from `--skill` | Language instruction (auto-detected if empty) |
+| `--task` | `cpu` | Task: `cpu` or `ram` (sets both skill CSV and language prompt) |
 | `--mode` | `planner` | Pipeline mode: `planner` or `e2e` |
-| `--skill` | `cpu` | Skill for planner mode: `cpu` or `ram` |
 | `--fps` | `10` | Control rate (must match training FPS) |
 | `--max-steps` | `300` | Timeout in inference steps |
 | `--correction-server-port` | `0` | Correction model server port (0 = disabled) |
