@@ -1,20 +1,122 @@
 # HPRC GRACE Server Setup for OpenPI UR5e Fine-Tuning
 
-Complete step-by-step instructions for deploying UR5e configs on the TAMU HPRC GRACE cluster.
+Complete step-by-step instructions for deploying UR5e configs on the TAMU HPRC GRACE cluster, starting from scratch.
 
 **Grace cluster specs**: 48 cores / 384 GB RAM per node, up to 2 GPUs per node.
-**Scratch storage**: 1 TB / 250k files at `$SCRATCH` (`/scratch/user/changliu.chris`).
+**Scratch storage**: 1 TB / 250k files at `$SCRATCH` (auto-set by HPRC to `/scratch/user/<YOUR_NETID>`).
 
-## Prerequisites (Already Done)
+---
 
-- OpenPI cloned and installed at `$SCRATCH/openpi`
-- `uv sync` completed, numpy compatibility resolved
-- 6 LeRobot datasets uploaded to `$SCRATCH/ChangChrisLiu/`
-- UV cache set: `export UV_CACHE_DIR=$SCRATCH/.cache/uv`
+## Step 0: Initial Server Setup (One-Time)
 
-## Step 0: Update Server OpenPI to Latest Upstream
+SSH into Grace and perform all first-time setup steps.
 
-The server's OpenPI clone may be older than your local copy. Our custom `config.py` is built on the latest upstream and imports modules (e.g. `polaris_config`, `roboarena_config`) that only exist in recent commits. **You must update before uploading custom files.**
+```bash
+ssh <YOUR_NETID>@grace.hprc.tamu.edu
+```
+
+### 0a. Clone OpenPI
+
+```bash
+cd $SCRATCH
+git clone https://github.com/Physical-Intelligence/openpi.git
+cd $SCRATCH/openpi
+```
+
+### 0b. Set UV Cache Directory
+
+The home directory quota on Grace is small. Redirect uv's cache to scratch before any dependency operations:
+
+```bash
+export UV_CACHE_DIR=$SCRATCH/.cache/uv
+```
+
+### 0c. Fix numpy Version Conflict
+
+The dependency resolver hits a conflict out of the box:
+- `openpi` and `openpi-client` require `numpy>=1.22.4,<2.0.0`
+- `lerobot` -> `rerun-sdk>=0.23.4` -> requires `numpy>=2`
+
+**Fix**: Relax the numpy upper bound in both `pyproject.toml` files, then sync:
+
+```bash
+cd $SCRATCH/openpi
+
+# Main package
+sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' pyproject.toml
+
+# Client subpackage
+sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' packages/openpi-client/pyproject.toml
+
+# Sync dependencies (this resolves and installs everything — takes a few minutes)
+uv sync
+```
+
+If `uv sync` fails with **disk quota exceeded**:
+```bash
+export UV_CACHE_DIR=$SCRATCH/.cache/uv
+uv cache clean
+uv sync
+```
+
+### 0d. Enable Frozen Mode
+
+After the initial `uv sync` succeeds, always use `UV_FROZEN=1` for subsequent commands to skip re-resolution (avoids a `dlimp`/`tensorflow` conflict that surfaces on re-resolve):
+
+```bash
+export UV_FROZEN=1
+```
+
+### 0e. Upload Datasets to Scratch
+
+From your **local machine**, upload the 6 LeRobot datasets to the server. Each dataset is a directory containing `data/`, `meta/`, etc.
+
+```bash
+# ---- Run on LOCAL machine ----
+NETID=<YOUR_NETID>
+SERVER=$NETID@grace.hprc.tamu.edu
+
+# Create the parent directory on the server first
+ssh $SERVER "mkdir -p \$SCRATCH/ChangChrisLiu"
+
+# Upload all 6 datasets (~1-5 GB each depending on frame count)
+for ds in ur5e_planner_10hz ur5e_planner_30hz \
+          ur5e_e2e_10hz ur5e_e2e_30hz \
+          ur5e_correction_10hz ur5e_correction_30hz; do
+    scp -r ~/lerobot_datasets/ChangChrisLiu/$ds \
+        $SERVER:/scratch/user/$NETID/ChangChrisLiu/
+done
+```
+
+**Note**: Replace the local path (`~/lerobot_datasets/ChangChrisLiu/`) with wherever your converted LeRobot datasets live. The destination must be `$SCRATCH/ChangChrisLiu/` on the server (OpenPI config repo_ids are `ChangChrisLiu/ur5e_*`, and `HF_LEROBOT_HOME` will point to `$SCRATCH`).
+
+---
+
+## Important: Fix Your HF_LEROBOT_HOME Path
+
+Two common mistakes to avoid:
+
+**Issue 1**: `~` expands to your HOME (e.g., `/home/<YOUR_NETID>`), not scratch. `~/scratch/...` is WRONG.
+
+**Issue 2**: `HF_LEROBOT_HOME` must point to the **parent** of `ChangChrisLiu/`, because config repo_ids are `ChangChrisLiu/ur5e_planner_10hz`. OpenPI looks for `$HF_LEROBOT_HOME/ChangChrisLiu/ur5e_planner_10hz/`.
+
+```bash
+# WRONG:
+export HF_LEROBOT_HOME=~/scratch/ChangChrisLiu
+
+# CORRECT — parent of ChangChrisLiu/, using $SCRATCH:
+export HF_LEROBOT_HOME=$SCRATCH
+
+# Verify:
+ls $HF_LEROBOT_HOME/ChangChrisLiu/ur5e_planner_10hz/
+# Should show: data/, meta/, etc.
+```
+
+---
+
+## Step 1: Update Server OpenPI to Latest Upstream
+
+If you already cloned in Step 0, this step is for future updates. Our custom `config.py` is built on the latest upstream and imports modules (e.g. `polaris_config`, `roboarena_config`) that only exist in recent commits. **You must update before uploading custom files.**
 
 ```bash
 cd $SCRATCH/openpi
@@ -31,74 +133,23 @@ If `git pull` fails due to local changes on the server:
 ```bash
 git stash          # save local edits
 git pull origin main
-git stash pop      # re-apply (conflicts on config.py are expected — we overwrite it in Step 1)
+git stash pop      # re-apply (conflicts on config.py are expected — we overwrite it next)
 ```
 
-If `git stash pop` has conflicts, don't worry — Step 1 overwrites `config.py` and `download.py` entirely.
-
-### Fix numpy Version Conflict (First-Time Setup Only)
-
-On a **fresh clone** (before any `uv sync`), the dependency resolver hits a conflict:
-- `openpi` and `openpi-client` require `numpy>=1.22.4,<2.0.0`
-- `lerobot` → `rerun-sdk>=0.23.4` → requires `numpy>=2`
-
-**Fix**: Relax the numpy upper bound in both `pyproject.toml` files, then sync:
-
-```bash
-cd $SCRATCH/openpi
-
-# Main package
-sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' pyproject.toml
-
-# Client subpackage
-sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' packages/openpi-client/pyproject.toml
-
-# Re-sync (without UV_FROZEN so it re-resolves dependencies)
-uv sync
-
-# Then re-enable frozen mode for all subsequent commands
-export UV_FROZEN=1
-```
-
-If `uv sync` fails with **disk quota exceeded** on the server:
-```bash
-# Redirect uv cache to scratch (home quota is small)
-export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
-uv cache clean
-uv sync
-```
-
-**Note**: After the initial `uv sync` succeeds, use `UV_FROZEN=1` for all subsequent commands to skip re-resolution. The lockfile (`uv.lock`) is now updated and compatible.
-
-## Important: Fix Your HF_LEROBOT_HOME Path
-
-**Issue 1**: `~` expands to your HOME (`/home/changliu.chris`), not scratch. `~/scratch/...` is WRONG.
-
-**Issue 2**: `HF_LEROBOT_HOME` must point to the **parent** of `ChangChrisLiu/`, because config repo_ids are `ChangChrisLiu/ur5e_planner_10hz`. OpenPI looks for `$HF_LEROBOT_HOME/ChangChrisLiu/ur5e_planner_10hz/`.
-
-```bash
-# WRONG:
-export HF_LEROBOT_HOME=~/scratch/user/changliu.chris/ChangChrisLiu
-
-# CORRECT — parent of ChangChrisLiu/, using absolute path:
-export HF_LEROBOT_HOME=/scratch/user/changliu.chris
-
-# Verify:
-ls $HF_LEROBOT_HOME/ChangChrisLiu/ur5e_planner_10hz/
-# Should show: data/, meta/, etc.
-```
+If `git stash pop` has conflicts, don't worry — the next step overwrites `config.py` and `download.py` entirely.
 
 ---
 
-## Step 1: Upload Files from Local Machine
+## Step 2: Upload Custom Files from Local Machine
 
-After `git pull` (Step 0), upload the **4 custom files + 4 asset dirs** from your local machine. Run `scp` from your **local terminal**:
+Upload the **4 custom files + 4 asset dirs** from your local machine. Run `scp` from your **local terminal**:
 
 ```bash
 # ---- Run on LOCAL machine ----
+NETID=<YOUR_NETID>
 LOCAL_OPENPI=~/openpi
-SERVER=changliu.chris@grace.hprc.tamu.edu
-REMOTE_OPENPI=/scratch/user/changliu.chris/openpi
+SERVER=$NETID@grace.hprc.tamu.edu
+REMOTE_OPENPI=/scratch/user/$NETID/openpi
 
 # 1. UR5e policy file (NEW — does not exist upstream)
 scp $LOCAL_OPENPI/src/openpi/policies/ur5e_policy.py \
@@ -127,7 +178,7 @@ scp -r $LOCAL_OPENPI/assets/pi0_ur5e_lora \
     $SERVER:$REMOTE_OPENPI/assets/
 ```
 
-**Note**: `misc/polaris_config.py` and `roboarena_config.py` are upstream files — `git pull` in Step 0 brings them in. No need to upload separately.
+**Note**: `misc/polaris_config.py` and `roboarena_config.py` are upstream files — `git pull` in Step 1 brings them in. No need to upload separately.
 
 **What each file does:**
 
@@ -142,16 +193,16 @@ scp -r $LOCAL_OPENPI/assets/pi0_ur5e_lora \
 
 ---
 
-## Step 2: Set Environment Variables
+## Step 3: Set Environment Variables
 
 Add to your `~/.bashrc` on GRACE:
 
 ```bash
 # OpenPI environment (add to ~/.bashrc on GRACE)
-export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
-export HF_LEROBOT_HOME=/scratch/user/changliu.chris
-export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
-export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
+export UV_CACHE_DIR=$SCRATCH/.cache/uv
+export HF_LEROBOT_HOME=$SCRATCH
+export HF_HOME=$SCRATCH/.cache/huggingface
+export OPENPI_DATA_HOME=$SCRATCH/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
 # CRITICAL: skip uv dependency re-resolution (avoids dlimp/tensorflow conflict)
@@ -183,7 +234,7 @@ Then: `source ~/.bashrc`
 
 ---
 
-## Step 3: Verify the Upload
+## Step 4: Verify the Upload
 
 SSH to Grace and run:
 
@@ -222,7 +273,7 @@ for c in ur5e:
 
 ---
 
-## Step 4: Compute Norm Stats
+## Step 5: Compute Norm Stats
 
 You have 4 pre-computed norm stats from the local machine. You need to compute the rest on the server.
 
@@ -238,8 +289,6 @@ Pick any config name per dataset — the result is identical. We use Pi0 LoRA na
 
 ```bash
 cd $SCRATCH/openpi
-export UV_FROZEN=1
-export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 
 # ~18 min each, ~2 hours total
 for config in \
@@ -270,13 +319,13 @@ Or submit as SLURM job — create `$SCRATCH/openpi/compute_stats.slurm`:
 ## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
 module load WebProxy
 export UV_FROZEN=1
-export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
-export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
-export HF_LEROBOT_HOME=/scratch/user/changliu.chris
-export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
+export UV_CACHE_DIR=$SCRATCH/.cache/uv
+export HF_HOME=$SCRATCH/.cache/huggingface
+export HF_LEROBOT_HOME=$SCRATCH
+export OPENPI_DATA_HOME=$SCRATCH/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
-cd /scratch/user/changliu.chris/openpi
+cd $SCRATCH/openpi
 
 for config in \
     pi0_ur5e_planner_lora_10hz \
@@ -345,11 +394,11 @@ echo "Created $(ls -l | grep '^l' | wc -l) symlinks"
 
 ---
 
-## Step 5: Pre-Download Model Files on Login Node
+## Step 6: Pre-Download Model Files on Login Node
 
 **Critical**: OpenPI downloads model checkpoints from Google Cloud Storage (GCS) using `gcsfs`/`aiohttp`. **`aiohttp` ignores `http_proxy`/`https_proxy` env vars**, so GCS downloads fail on compute nodes even with `module load WebProxy`. The fix is to pre-download everything on a **login node** (which has direct internet access), then compute node jobs find the local cache and skip the network call.
 
-### 5a. Check Disk Quota
+### 6a. Check Disk Quota
 
 Model checkpoints are ~10 GB each. Check you have space:
 
@@ -367,12 +416,10 @@ find $SCRATCH -name "*.arrow" -path "*/cache/*" -delete 2>/dev/null
 rm -rf $SCRATCH/openpi/checkpoints/*/validate/
 ```
 
-### 5b. Pre-Download PaliGemma Tokenizer
+### 6b. Pre-Download PaliGemma Tokenizer
 
 ```bash
 cd $SCRATCH/openpi
-export UV_FROZEN=1
-export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
 
 uv run python -c "
 from transformers import AutoTokenizer
@@ -383,14 +430,12 @@ print('Tokenizer cached successfully')
 
 Verify: `ls $HF_HOME/hub/models--google--paligemma-3b-pt-224/`
 
-### 5c. Pre-Download Model Checkpoint
+### 6c. Pre-Download Model Checkpoint
 
 Download only the checkpoint for the model you plan to train. Each is ~10 GB, takes 10-30 minutes.
 
 ```bash
 cd $SCRATCH/openpi
-export UV_FROZEN=1
-export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 
 # Pi0.5-DROID (recommended first — used in Training Run 1)
 uv run python -c "
@@ -418,9 +463,9 @@ uv run python -c "from openpi.shared.download import maybe_download; maybe_downl
 
 ---
 
-## Step 6: Quick Validation (Before Real Training)
+## Step 7: Quick Validation (Before Real Training)
 
-Run a 5-step training test to verify everything works. **Model checkpoint and tokenizer must already be cached** (Step 5) — compute nodes cannot download them.
+Run a 5-step training test to verify everything works. **Model checkpoint and tokenizer must already be cached** (Step 6) — compute nodes cannot download them.
 
 ### Option A: Interactive GPU Session
 
@@ -429,7 +474,6 @@ srun --gres=gpu:1 --mem=64G --time=00:30:00 --partition=gpu --pty bash
 
 # Once on the GPU node:
 cd $SCRATCH/openpi
-export UV_FROZEN=1
 
 uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
     --exp-name validate \
@@ -458,13 +502,13 @@ Create `$SCRATCH/openpi/validate.slurm`:
 ## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
 module load WebProxy
 export UV_FROZEN=1
-export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
-export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
-export HF_LEROBOT_HOME=/scratch/user/changliu.chris
-export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
+export UV_CACHE_DIR=$SCRATCH/.cache/uv
+export HF_HOME=$SCRATCH/.cache/huggingface
+export HF_LEROBOT_HOME=$SCRATCH
+export OPENPI_DATA_HOME=$SCRATCH/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
-cd /scratch/user/changliu.chris/openpi
+cd $SCRATCH/openpi
 
 uv run scripts/train.py pi05_droid_ur5e_planner_lora_10hz \
     --exp-name validate \
@@ -479,7 +523,7 @@ sbatch validate.slurm
 
 ---
 
-## Step 7: Training
+## Step 8: Training
 
 ### LoRA Fine-Tuning (Single GPU)
 
@@ -499,14 +543,14 @@ Create `$SCRATCH/openpi/train_ur5e.slurm`:
 ## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
 module load WebProxy
 export UV_FROZEN=1
-export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
-export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
-export HF_LEROBOT_HOME=/scratch/user/changliu.chris
-export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
+export UV_CACHE_DIR=$SCRATCH/.cache/uv
+export HF_HOME=$SCRATCH/.cache/huggingface
+export HF_LEROBOT_HOME=$SCRATCH
+export OPENPI_DATA_HOME=$SCRATCH/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 
-cd /scratch/user/changliu.chris/openpi
+cd $SCRATCH/openpi
 
 # ===== CHANGE THESE TWO LINES =====
 CONFIG="pi05_droid_ur5e_planner_lora_10hz"
@@ -544,14 +588,14 @@ Grace has max 2 GPUs per node. For full finetune (batch_size=256):
 ## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
 module load WebProxy
 export UV_FROZEN=1
-export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
-export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
-export HF_LEROBOT_HOME=/scratch/user/changliu.chris
-export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
+export UV_CACHE_DIR=$SCRATCH/.cache/uv
+export HF_HOME=$SCRATCH/.cache/huggingface
+export HF_LEROBOT_HOME=$SCRATCH
+export OPENPI_DATA_HOME=$SCRATCH/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 
-cd /scratch/user/changliu.chris/openpi
+cd $SCRATCH/openpi
 
 CONFIG="pi05_droid_ur5e_e2e_30hz"
 EXP_NAME="e2e_full_v1"
@@ -574,7 +618,7 @@ uv run scripts/train.py $CONFIG --exp-name $EXP_NAME --fsdp-devices 2 --batch-si
 sbatch train_ur5e.slurm
 
 # Check your jobs
-squeue -u changliu.chris
+squeue -u $USER
 
 # Cancel a job
 scancel <JOBID>
@@ -588,7 +632,7 @@ showquota
 
 ---
 
-## Step 8: Resume / Continue Training
+## Step 9: Resume / Continue Training
 
 Replace `--overwrite` with `--resume` and increase `--num-train-steps`:
 
@@ -650,18 +694,18 @@ pi0_ur5e, pi0_ur5e_lora, pi0_fast_ur5e, pi0_fast_ur5e_lora
 
 | Issue | Solution |
 |-------|----------|
-| `FileNotFoundError: ChangChrisLiu/ur5e_*` | `HF_LEROBOT_HOME` must point to PARENT of `ChangChrisLiu/` — should be `/scratch/user/changliu.chris` |
+| `FileNotFoundError: ChangChrisLiu/ur5e_*` | `HF_LEROBOT_HOME` must point to PARENT of `ChangChrisLiu/` — should be `$SCRATCH` |
 | `ModuleNotFoundError: openpi.policies.ur5e_policy` | `ur5e_policy.py` not uploaded to `src/openpi/policies/` |
-| `ModuleNotFoundError: openpi.training.misc.polaris_config` | Server OpenPI is outdated — run `git pull origin main` (Step 0) |
+| `ModuleNotFoundError: openpi.training.misc.polaris_config` | Server OpenPI is outdated — run `git pull origin main` (Step 1) |
 | `uv` dependency resolution error (dlimp/tensorflow) | `export UV_FROZEN=1` — skips re-resolution |
 | `Config 'xxx' not found` | `config.py` not updated — re-upload from local |
 | `No norm stats found` | Run `compute_norm_stats.py` for that config, or create symlink |
 | OOM during LoRA | Reduce batch size: `--batch-size 4` |
 | OOM during full finetune | Use `--fsdp-devices 2 --batch-size 64` |
 | `Unable to initialize backend 'cuda'` | Not on a GPU node — use `srun --gres=gpu:1` or submit via `sbatch` |
-| numpy version conflict (`numpy<2` vs `rerun-sdk` needs `numpy>=2`) | Relax constraint: `sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' pyproject.toml packages/openpi-client/pyproject.toml` then `uv sync` (see Step 0) |
+| numpy version conflict (`numpy<2` vs `rerun-sdk` needs `numpy>=2`) | Relax constraint: `sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' pyproject.toml packages/openpi-client/pyproject.toml` then `uv sync` (see Step 0c) |
 | Slow first run | First run downloads ~10 GB base checkpoint from GCS to `$OPENPI_DATA_HOME`. This is a one-time cost per model. |
-| GCS checkpoint download fails on compute node | `gcsfs`/`aiohttp` ignores `http_proxy` env vars. **Pre-download on login node** (Step 5) — `maybe_download` caches locally, compute nodes use cache |
+| GCS checkpoint download fails on compute node | `gcsfs`/`aiohttp` ignores `http_proxy` env vars. **Pre-download on login node** (Step 6) — `maybe_download` caches locally, compute nodes use cache |
 | `OSError: paligemma_tokenizer` not found | Tokenizer not cached. Pre-download on login node: `uv run python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('google/paligemma-3b-pt-224')"` |
 | `Disk quota exceeded` during training | HF datasets Arrow cache filling scratch. Set `HF_HOME` to scratch, clean: `find $SCRATCH -name '*.arrow' -path '*/cache/*' -delete` |
 | Wandb fails to connect | `module load WebProxy` in SLURM script — wandb uses `requests` which respects proxy (unlike gcsfs) |
@@ -675,13 +719,14 @@ pi0_ur5e, pi0_ur5e_lora, pi0_fast_ur5e, pi0_fast_ur5e_lora
 ## Execution Order Summary
 
 ```
-0. git pull origin main + uv sync on server             (Step 0)
-1. scp 4 custom files + 4 asset dirs from local         (Step 1)
-2. Set environment variables in ~/.bashrc               (Step 2)
-3. Verify upload: Python import test on login node      (Step 3)
-4. Submit norm stats SLURM job                          (Step 4)
-5. After stats complete: create symlinks                (Step 4)
-6. Pre-download tokenizer + checkpoint on login node    (Step 5) ← CRITICAL
-7. Quick 5-step validation (interactive or batch)       (Step 6)
-8. Submit real training jobs                            (Step 7)
+0. Clone OpenPI, fix numpy, uv sync, upload datasets     (Step 0)
+1. git pull origin main + uv sync on server               (Step 1)
+2. scp 4 custom files + 4 asset dirs from local           (Step 2)
+3. Set environment variables in ~/.bashrc                 (Step 3)
+4. Verify upload: Python import test on login node        (Step 4)
+5. Submit norm stats SLURM job                            (Step 5)
+6. After stats complete: create symlinks                  (Step 5)
+7. Pre-download tokenizer + checkpoint on login node      (Step 6) ← CRITICAL
+8. Quick 5-step validation (interactive or batch)         (Step 7)
+9. Submit real training jobs                              (Step 8)
 ```

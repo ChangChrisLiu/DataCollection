@@ -219,14 +219,14 @@ cat > $SCRATCH/openpi/train_all_3.slurm << 'SLURM'
 ## Environment (SLURM non-interactive bash skips ~/.bashrc — must export here)
 module load WebProxy
 export UV_FROZEN=1
-export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
-export HF_HOME=/scratch/user/changliu.chris/.cache/huggingface
-export HF_LEROBOT_HOME=/scratch/user/changliu.chris
-export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
+export UV_CACHE_DIR=$SCRATCH/.cache/uv
+export HF_HOME=$SCRATCH/.cache/huggingface
+export HF_LEROBOT_HOME=$SCRATCH
+export OPENPI_DATA_HOME=$SCRATCH/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 
-cd /scratch/user/changliu.chris/openpi
+cd $SCRATCH/openpi
 
 echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')"
 
@@ -284,7 +284,7 @@ sbatch train_all_3.slurm
 
 ```bash
 # Job status
-squeue -u changliu.chris
+squeue -u $USER
 
 # Live log
 tail -f $SCRATCH/openpi/train_all_3_*.log
@@ -299,8 +299,8 @@ After GRACE training completes, download to local for inference:
 
 ```bash
 # Run from LOCAL machine:
-SERVER=changliu.chris@grace.hprc.tamu.edu
-REMOTE=$SERVER:/scratch/user/changliu.chris/openpi/checkpoints
+SERVER=<YOUR_NETID>@grace.hprc.tamu.edu
+REMOTE=$SERVER:$SCRATCH/openpi/checkpoints
 
 scp -r $REMOTE/pi05_droid_ur5e_planner_lora_10hz/planner_v1/30000 \
     ~/openpi/checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1_grace/30000
@@ -356,7 +356,7 @@ Runs from local and GRACE appear side-by-side. Use wandb run names (`planner_v1`
 | **Local**: Inline env vars fail | Don't use `VAR=val command`. Export in `~/.bashrc` instead (see A.2) |
 | **GRACE**: `uv` resolution error | `export UV_FROZEN=1` |
 | **GRACE**: `Unable to initialize backend 'cuda'` | Not on GPU node — use `srun --gres=gpu:1` or `sbatch` |
-| **GRACE**: `FileNotFoundError` for dataset | `HF_LEROBOT_HOME` must be `/scratch/user/changliu.chris` (parent of `ChangChrisLiu/`) |
+| **GRACE**: `FileNotFoundError` for dataset | `HF_LEROBOT_HOME` must be `$SCRATCH` (parent of `ChangChrisLiu/`) |
 | **GRACE**: GCS checkpoint download fails/hangs | `gcsfs`/`aiohttp` ignores `http_proxy`. Pre-download on login node (see SERVER_SETUP Step 5) |
 | **GRACE**: `Disk quota exceeded` | HF datasets cache filling scratch. `find $SCRATCH -name '*.arrow' -path '*/cache/*' -delete` |
 | **Both**: Wandb not logging | Check `WANDB_API_KEY` is set |
