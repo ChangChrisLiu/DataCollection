@@ -31,7 +31,13 @@ This moves the model checkpoint cache from a hidden directory to a visible locat
 ```bash
 # 1. Clone OpenPI and install
 git clone --recurse-submodules git@github.com:Physical-Intelligence/openpi.git
-cd openpi && GIT_LFS_SKIP_SMUDGE=1 uv sync
+cd openpi
+
+# 1b. Fix numpy version conflict (openpi pins <2.0, but rerun-sdk needs >=2)
+sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' pyproject.toml
+sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' packages/openpi-client/pyproject.toml
+
+GIT_LFS_SKIP_SMUDGE=1 uv sync
 
 # 2. Copy UR5e policy file
 cp /path/to/DataCollection/openpi_configs/ur5e_policy.py src/openpi/policies/

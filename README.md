@@ -1207,6 +1207,10 @@ git submodule update --init --recursive
 # Install uv (package manager) if needed
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
+# Fix numpy version conflict (openpi pins <2.0, but rerun-sdk needs >=2)
+sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' pyproject.toml
+sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' packages/openpi-client/pyproject.toml
+
 # Install all dependencies (skip LFS for speed)
 GIT_LFS_SKIP_SMUDGE=1 uv sync
 ```

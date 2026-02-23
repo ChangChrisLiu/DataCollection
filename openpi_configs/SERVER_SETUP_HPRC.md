@@ -36,6 +36,40 @@ git stash pop      # re-apply (conflicts on config.py are expected — we overwr
 
 If `git stash pop` has conflicts, don't worry — Step 1 overwrites `config.py` and `download.py` entirely.
 
+### Fix numpy Version Conflict (First-Time Setup Only)
+
+On a **fresh clone** (before any `uv sync`), the dependency resolver hits a conflict:
+- `openpi` and `openpi-client` require `numpy>=1.22.4,<2.0.0`
+- `lerobot` → `rerun-sdk>=0.23.4` → requires `numpy>=2`
+
+**Fix**: Relax the numpy upper bound in both `pyproject.toml` files, then sync:
+
+```bash
+cd $SCRATCH/openpi
+
+# Main package
+sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' pyproject.toml
+
+# Client subpackage
+sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' packages/openpi-client/pyproject.toml
+
+# Re-sync (without UV_FROZEN so it re-resolves dependencies)
+uv sync
+
+# Then re-enable frozen mode for all subsequent commands
+export UV_FROZEN=1
+```
+
+If `uv sync` fails with **disk quota exceeded** on the server:
+```bash
+# Redirect uv cache to scratch (home quota is small)
+export UV_CACHE_DIR=/scratch/user/changliu.chris/.cache/uv
+uv cache clean
+uv sync
+```
+
+**Note**: After the initial `uv sync` succeeds, use `UV_FROZEN=1` for all subsequent commands to skip re-resolution. The lockfile (`uv.lock`) is now updated and compatible.
+
 ## Important: Fix Your HF_LEROBOT_HOME Path
 
 **Issue 1**: `~` expands to your HOME (`/home/changliu.chris`), not scratch. `~/scratch/...` is WRONG.
@@ -646,7 +680,7 @@ pi0_ur5e, pi0_ur5e_lora, pi0_fast_ur5e, pi0_fast_ur5e_lora
 | OOM during LoRA | Reduce batch size: `--batch-size 4` |
 | OOM during full finetune | Use `--fsdp-devices 2 --batch-size 64` |
 | `Unable to initialize backend 'cuda'` | Not on a GPU node — use `srun --gres=gpu:1` or submit via `sbatch` |
-| numpy version conflict | `uv pip install numpy==1.26.4` (already fixed) |
+| numpy version conflict (`numpy<2` vs `rerun-sdk` needs `numpy>=2`) | Relax constraint: `sed -i 's/"numpy>=1.22.4,<2.0.0"/"numpy>=1.22.4"/' pyproject.toml packages/openpi-client/pyproject.toml` then `uv sync` (see Step 0) |
 | Slow first run | First run downloads ~10 GB base checkpoint from GCS to `$OPENPI_DATA_HOME`. This is a one-time cost per model. |
 | GCS checkpoint download fails on compute node | `gcsfs`/`aiohttp` ignores `http_proxy` env vars. **Pre-download on login node** (Step 5) — `maybe_download` caches locally, compute nodes use cache |
 | `OSError: paligemma_tokenizer` not found | Tokenizer not cached. Pre-download on login node: `uv run python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('google/paligemma-3b-pt-224')"` |
