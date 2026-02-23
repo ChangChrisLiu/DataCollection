@@ -1503,7 +1503,7 @@ T3: Start model server (see per-backend commands below)
 
 T4: conda activate tele
     python experiments/run_inference.py --model-type <backend> --server-port <port> \
-        --prompt "pick up the cpu" --mode planner --skill cpu
+        --mode planner --skill cpu
 ```
 
 ### Starting Model Servers (T3)
@@ -1563,7 +1563,6 @@ conda activate tele
 python experiments/run_inference.py \
     --model-type openpi \
     --server-port 8000 \
-    --prompt "pick up the cpu" \
     --mode planner \
     --skill cpu \
     --fps 10 \
@@ -1573,7 +1572,6 @@ python experiments/run_inference.py \
 python experiments/run_inference.py \
     --model-type openvla \
     --server-port 8000 \
-    --prompt "pick up the cpu" \
     --mode planner \
     --skill cpu \
     --fps 10
@@ -1582,7 +1580,6 @@ python experiments/run_inference.py \
 python experiments/run_inference.py \
     --model-type openvla_oft \
     --server-port 8777 \
-    --prompt "pick up the cpu" \
     --mode planner \
     --skill cpu \
     --fps 10
@@ -1591,15 +1588,34 @@ python experiments/run_inference.py \
 #### E2E Mode (model handles entire trajectory)
 
 ```bash
-# OpenPI e2e
+# OpenPI e2e (prompt auto-detected from --skill)
 python experiments/run_inference.py \
     --model-type openpi \
     --server-port 8000 \
-    --prompt "pick up the cpu" \
     --mode e2e \
+    --skill cpu \
     --fps 10 \
     --max-steps 500
 ```
+
+### Language Instructions (Prompt Handling)
+
+The `--prompt` is **auto-detected** from `--skill` if not explicitly provided. This matches the exact strings used during training data conversion:
+
+| Skill | Instruction (from `conversion_utils.py`) |
+|-------|----------------------------------------|
+| `cpu` | "Extract the CPU from the Bracket by unlocking it first, then extract the CPU and place it inside the yellow square area, then back home." |
+| `ram` | "Extract the RAM from the slot and place it inside the blue square area, then back home." |
+
+Each model server wraps the prompt differently:
+
+| Backend | What the client sends | What the server does internally |
+|---------|----------------------|-------------------------------|
+| **OpenPI** | `{"prompt": "<instruction>"}` | Passes to model as-is (no wrapping) |
+| **OpenVLA** | `{"instruction": "<instruction>"}` | Wraps as `"In: What action should the robot take to <instruction>?\nOut:"` |
+| **OpenVLA-OFT** | `{"instruction": "<instruction>"}` | Same wrapping as OpenVLA |
+
+You only need to provide the raw instruction — the server handles any model-specific prompt formatting. Override with `--prompt "custom text"` if needed.
 
 ### Action Application Summary
 
@@ -1626,7 +1642,7 @@ Physical gripper range: 3-230 (normalized 0.012-0.902). Stop thresholds give wid
 | `--model-type` | `openpi` | Backend: `openpi`, `openvla`, or `openvla_oft` |
 | `--server-host` | `127.0.0.1` | Model server host |
 | `--server-port` | `8000` | Model server port |
-| `--prompt` | `pick up the cpu` | Language instruction |
+| `--prompt` | auto from `--skill` | Language instruction (auto-detected if empty) |
 | `--mode` | `planner` | Pipeline mode: `planner` or `e2e` |
 | `--skill` | `cpu` | Skill for planner mode: `cpu` or `ram` |
 | `--fps` | `10` | Control rate (must match training FPS) |

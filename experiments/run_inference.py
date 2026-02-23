@@ -149,8 +149,8 @@ class Args:
     # --- Model config ---
     model_type: str = "openpi"
     """Model backend: "openpi", "openvla", or "openvla_oft"."""
-    prompt: str = "pick up the cpu"
-    """Language instruction for the model."""
+    prompt: str = ""
+    """Language instruction. Auto-detected from --skill if empty (recommended)."""
 
     # --- Server connection ---
     server_host: str = "127.0.0.1"
@@ -645,11 +645,32 @@ def run_e2e_mode(
 
 
 # ---------------------------------------------------------------------------
+# Task instructions (must match training data from conversion_utils.py)
+# ---------------------------------------------------------------------------
+
+TASK_INSTRUCTIONS = {
+    "cpu": (
+        "Extract the CPU from the Bracket by unlocking it first, "
+        "then extract the CPU and place it inside the yellow square area, "
+        "then back home."
+    ),
+    "ram": (
+        "Extract the RAM from the slot and place it inside the blue square area, "
+        "then back home."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 
 def main(args: Args):
+    # Auto-detect prompt from skill if not explicitly provided
+    if not args.prompt:
+        args.prompt = TASK_INSTRUCTIONS.get(args.skill, args.skill)
+
     print("=" * 60)
     print("  VLA INFERENCE PIPELINE")
     print("=" * 60)
