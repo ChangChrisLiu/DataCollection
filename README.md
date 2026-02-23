@@ -1303,13 +1303,13 @@ cd /home/chris/openpi
 export HF_LEROBOT_HOME=~/lerobot_datasets
 
 # Single config
-uv run scripts/compute_norm_stats.py --config-name pi05_droid_ur5e_planner_lora_10hz
+uv run scripts/compute_norm_stats.py --config-name pi0_ur5e_planner_lora_10hz
 
-# All configs (batch script — run on server for full set)
+# All 6 datasets (batch script — ~18 min each, ~2 hrs total)
 bash scripts/compute_all_ur5e_norm_stats.sh
 ```
 
-Configs sharing the same dataset + normalization type produce identical stats (Pi0-FAST, Pi0.5-base, Pi0.5-DROID all use quantile normalization and can be symlinked).
+**Stats are identical across all model types for the same dataset** — `compute_norm_stats.py` computes mean, std, q01, q99 from raw data without using model_type. Only **6 computations** needed (one per dataset). All 52 configs share these via symlinks (see `openpi_configs/SERVER_SETUP_HPRC.md` Step 4 for the symlink script).
 
 #### C.5 Train
 

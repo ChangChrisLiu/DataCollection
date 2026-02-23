@@ -30,13 +30,13 @@ Datasets (6):
   ChangChrisLiu/ur5e_e2e_10hz        ChangChrisLiu/ur5e_e2e_30hz
   ChangChrisLiu/ur5e_correction_10hz ChangChrisLiu/ur5e_correction_30hz
 
-Norm stats sharing (same dataset + same norm type = identical stats):
-  Pi0 (z-score):          6 unique, must compute all
-  Pi0-FAST (quantile):    6 unique, compute these as representative
-  Pi0.5-base (quantile):  symlink to Pi0-FAST
-  Pi0.5-DROID (quantile): symlink to Pi0-FAST
-  Full finetune:          symlink to LoRA (same norm type)
-  Total: 12 computed + 37 symlinked + 3 pre-uploaded = 52
+Norm stats: compute_norm_stats.py computes mean, std, q01, q99 from raw data.
+  Stats are IDENTICAL across all model types for the same dataset (model-agnostic).
+  Different models read different fields at training time:
+    Pi0: uses mean/std (z-score normalization)
+    Pi0-FAST, Pi0.5-base, Pi0.5-DROID: use q01/q99 (quantile normalization)
+  Only 6 computations needed (one per dataset). All 52 configs share via symlinks.
+  Total: 6 computed + 46 symlinked = 52
 """
 
 # ==============================================================================

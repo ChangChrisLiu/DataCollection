@@ -8,7 +8,7 @@ Reference copies of the custom UR5e config files deployed in the OpenPI codebase
 |------|----------------------------|------|---------|
 | `ur5e_policy.py` | `src/openpi/policies/ur5e_policy.py` | NEW | Input/output transforms mapping UR5e observations to model format |
 | `config_ur5e_section.py` | Inserted into `src/openpi/training/config.py` | REFERENCE | LeRobotUR5eDataConfig class + 52 TrainConfig entries (patterns + full name list) |
-| `compute_all_ur5e_norm_stats.sh` | `scripts/compute_all_ur5e_norm_stats.sh` | NEW | Batch norm stats computation (12 unique configs, ~3.5 hrs total) |
+| `compute_all_ur5e_norm_stats.sh` | `scripts/compute_all_ur5e_norm_stats.sh` | NEW | Batch norm stats computation (6 unique configs, ~2 hrs total) |
 | `SERVER_SETUP_HPRC.md` | N/A (docs only) | GUIDE | Complete HPRC GRACE server deployment (Steps 0-8) |
 | `TRAINING_RUN_1.md` | N/A (docs only) | GUIDE | Pi0.5-DROID LoRA x 3 targets @ 10hz training guide |
 
@@ -59,14 +59,18 @@ cp /path/to/DataCollection/openpi_configs/compute_all_ur5e_norm_stats.sh scripts
 export HF_LEROBOT_HOME=~/lerobot_datasets
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
-# 8. Compute norm stats (12 unique, ~18 min each)
+# 8. Compute norm stats (6 unique — one per dataset, ~18 min each)
 bash scripts/compute_all_ur5e_norm_stats.sh
 
-# 9. Create symlinks for remaining configs (see SERVER_SETUP_HPRC.md Step 4)
+# 9. Create symlinks for remaining 46 configs (see SERVER_SETUP_HPRC.md Step 4)
+#    Stats are identical across ALL model types for the same dataset.
+#    The script computes using pi0_ur5e_*_lora_* names; symlink the rest.
 cd assets
-ln -sf pi0_ur5e_planner_lora_10hz pi0_ur5e_planner_10hz     # full → LoRA
-ln -sf pi0_fast_ur5e_planner_lora_10hz pi05_ur5e_planner_lora_10hz  # Pi0.5 → Pi0-FAST
-# ... (see SERVER_SETUP_HPRC.md Step 4 for complete symlink commands)
+ln -sf pi0_ur5e_planner_lora_10hz pi0_ur5e_planner_10hz           # full → LoRA
+ln -sf pi0_ur5e_planner_lora_10hz pi0_fast_ur5e_planner_lora_10hz # Pi0-FAST → Pi0
+ln -sf pi0_ur5e_planner_lora_10hz pi05_ur5e_planner_lora_10hz     # Pi0.5 → Pi0
+ln -sf pi0_ur5e_planner_lora_10hz pi05_droid_ur5e_planner_lora_10hz  # Pi0.5-DROID → Pi0
+# ... (see SERVER_SETUP_HPRC.md Step 4 for complete symlink loop)
 
 # 10. Verify configs load
 uv run python -c "
@@ -116,14 +120,15 @@ pi0_ur5e, pi0_ur5e_lora, pi0_fast_ur5e, pi0_fast_ur5e_lora
 
 ## Norm Stats Sharing
 
-Configs sharing the same dataset + normalization type produce identical stats. Only 12 unique computations are needed:
+`compute_norm_stats.py` computes mean, std, q01, q99 from raw dataset values. **Stats are identical across ALL model types for the same dataset** — the script does not use model_type. Different models just read different fields at training time (Pi0 uses mean/std for z-score; Pi0-FAST/Pi0.5 use q01/q99 for quantile).
 
-| Norm Type | Models | Unique Configs | Others |
-|-----------|--------|---------------|--------|
-| z-score | Pi0 | 6 (compute) | Pi0 full → symlink to Pi0 LoRA |
-| quantile | Pi0-FAST, Pi0.5-base, Pi0.5-DROID | 6 (compute Pi0-FAST) | All others → symlink to Pi0-FAST LoRA |
+Only **6 computations** needed — one per dataset. All 52 configs share these 6 via symlinks:
 
-Total: 12 computed + 37 symlinked + 3 pre-uploaded = 52 configs covered.
+| Computed (6) | Symlinked (46) |
+|---|---|
+| `pi0_ur5e_{planner,e2e,correction}_lora_{10,30}hz` | All other config names for same dataset → symlink to computed dir |
+
+See `SERVER_SETUP_HPRC.md` Step 4 for the complete symlink script.
 
 ---
 

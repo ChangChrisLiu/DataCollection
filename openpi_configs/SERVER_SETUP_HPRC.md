@@ -226,26 +226,40 @@ for c in ur5e:
 
 You have 4 pre-computed norm stats from the local machine. You need to compute the rest on the server.
 
-### Fix the Script Path First
+### How Norm Stats Work
+
+`compute_norm_stats.py` computes mean, std, q01, q99 from the raw dataset values. **The stats are identical across all model types for the same dataset** — the script does not use model_type. Different models just read different fields at training time (Pi0 uses mean/std for z-score normalization; Pi0-FAST/Pi0.5 use q01/q99 for quantile normalization).
+
+This means you only need **6 computations** — one per dataset. All 52 configs can share these 6 via symlinks.
+
+### Compute Stats (6 Datasets)
+
+Pick any config name per dataset — the result is identical. We use Pi0 LoRA names:
 
 ```bash
 cd $SCRATCH/openpi
+export UV_FROZEN=1
+export HF_LEROBOT_HOME=/scratch/user/changliu.chris
 
-# Update HF_LEROBOT_HOME in the script to match the server
-sed -i 's|export HF_LEROBOT_HOME=~/lerobot_datasets|export HF_LEROBOT_HOME=/scratch/user/changliu.chris|' \
-    scripts/compute_all_ur5e_norm_stats.sh
-
-chmod +x scripts/compute_all_ur5e_norm_stats.sh
+# ~18 min each, ~2 hours total
+for config in \
+    pi0_ur5e_planner_lora_10hz \
+    pi0_ur5e_planner_lora_30hz \
+    pi0_ur5e_e2e_lora_10hz \
+    pi0_ur5e_e2e_lora_30hz \
+    pi0_ur5e_correction_lora_10hz \
+    pi0_ur5e_correction_lora_30hz; do
+    echo "Computing: $config"
+    uv run scripts/compute_norm_stats.py --config-name "$config"
+done
 ```
 
-### Submit as SLURM Job
-
-Create `$SCRATCH/openpi/compute_stats.slurm`:
+Or submit as SLURM job — create `$SCRATCH/openpi/compute_stats.slurm`:
 
 ```bash
 #!/bin/bash
 #SBATCH --job-name=ur5e_norm_stats
-#SBATCH --time=8:00:00
+#SBATCH --time=4:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -263,109 +277,70 @@ export OPENPI_DATA_HOME=/scratch/user/changliu.chris/openpi_data
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
 cd /scratch/user/changliu.chris/openpi
-bash scripts/compute_all_ur5e_norm_stats.sh
+
+for config in \
+    pi0_ur5e_planner_lora_10hz \
+    pi0_ur5e_planner_lora_30hz \
+    pi0_ur5e_e2e_lora_10hz \
+    pi0_ur5e_e2e_lora_30hz \
+    pi0_ur5e_correction_lora_10hz \
+    pi0_ur5e_correction_lora_30hz; do
+    echo "========================================"
+    echo "Computing: $config — $(date)"
+    echo "========================================"
+    uv run scripts/compute_norm_stats.py --config-name "$config"
+done
+echo "ALL DONE — $(date)"
 ```
 
 ```bash
 sbatch compute_stats.slurm
-
-# Monitor:
-squeue -u changliu.chris
-# View log:
-tail -f norm_stats_*.log
-```
-
-This computes 12 unique norm stat configs (~18 min each, ~3.5 hours total).
-
-### Or Compute Only What You Need
-
-```bash
-# Example: just one config
-uv run scripts/compute_norm_stats.py --config-name pi0_ur5e_e2e_lora_30hz
 ```
 
 ### Create Symlinks (After Stats Are Computed)
 
-Configs sharing the same dataset + normalization type produce identical stats. The compute script only computes stats for **12 unique combinations** (6 Pi0 z-score + 6 Pi0-FAST quantile). All other configs get symlinks.
-
-**How norm stats sharing works:**
-
-| Norm Type | Models Using It | Compute From | Symlink To |
-|-----------|----------------|--------------|------------|
-| **z-score** | Pi0 | `pi0_ur5e_{target}_lora_{fps}hz` | Pi0 full finetune → Pi0 LoRA |
-| **quantile** | Pi0-FAST, Pi0.5-base, Pi0.5-DROID | `pi0_fast_ur5e_{target}_lora_{fps}hz` | All others → Pi0-FAST LoRA |
-
-**Total**: 12 computed + 37 symlinked + 3 pre-uploaded (Pi0.5-DROID 10hz) = 52 configs covered.
+Since norm stats are identical across all model types for the same dataset, we compute once (using `pi0_ur5e_*_lora_*` names) and symlink all 46 other config names to those 6 computed dirs.
 
 Run this **after** the norm stats job completes:
 
 ```bash
 cd $SCRATCH/openpi/assets
 
-# ================================================================
-# GROUP 1: Pi0 full finetune → Pi0 LoRA (same z-score stats)
-# 6 symlinks
-# ================================================================
-ln -sf pi0_ur5e_planner_lora_10hz pi0_ur5e_planner_10hz
-ln -sf pi0_ur5e_planner_lora_30hz pi0_ur5e_planner_30hz
-ln -sf pi0_ur5e_e2e_lora_10hz pi0_ur5e_e2e_10hz
-ln -sf pi0_ur5e_e2e_lora_30hz pi0_ur5e_e2e_30hz
-ln -sf pi0_ur5e_correction_lora_10hz pi0_ur5e_correction_10hz
-ln -sf pi0_ur5e_correction_lora_30hz pi0_ur5e_correction_30hz
+# Source: 6 computed dirs (pi0_ur5e_{target}_lora_{fps}hz)
+# Each symlink target uses the same dataset → identical stats
 
-# ================================================================
-# GROUP 2: Pi0-FAST full finetune → Pi0-FAST LoRA (same quantile stats)
-# 6 symlinks
-# ================================================================
-ln -sf pi0_fast_ur5e_planner_lora_10hz pi0_fast_ur5e_planner_10hz
-ln -sf pi0_fast_ur5e_planner_lora_30hz pi0_fast_ur5e_planner_30hz
-ln -sf pi0_fast_ur5e_e2e_lora_10hz pi0_fast_ur5e_e2e_10hz
-ln -sf pi0_fast_ur5e_e2e_lora_30hz pi0_fast_ur5e_e2e_30hz
-ln -sf pi0_fast_ur5e_correction_lora_10hz pi0_fast_ur5e_correction_10hz
-ln -sf pi0_fast_ur5e_correction_lora_30hz pi0_fast_ur5e_correction_30hz
+TARGETS=(planner e2e correction)
+FPS_LIST=(10hz 30hz)
 
-# ================================================================
-# GROUP 3: Pi0.5-base (ALL variants) → Pi0-FAST LoRA (same quantile)
-# 12 symlinks (6 LoRA + 6 full finetune)
-# ================================================================
-ln -sf pi0_fast_ur5e_planner_lora_10hz pi05_ur5e_planner_lora_10hz
-ln -sf pi0_fast_ur5e_planner_lora_30hz pi05_ur5e_planner_lora_30hz
-ln -sf pi0_fast_ur5e_e2e_lora_10hz pi05_ur5e_e2e_lora_10hz
-ln -sf pi0_fast_ur5e_e2e_lora_30hz pi05_ur5e_e2e_lora_30hz
-ln -sf pi0_fast_ur5e_correction_lora_10hz pi05_ur5e_correction_lora_10hz
-ln -sf pi0_fast_ur5e_correction_lora_30hz pi05_ur5e_correction_lora_30hz
-ln -sf pi0_fast_ur5e_planner_lora_10hz pi05_ur5e_planner_10hz
-ln -sf pi0_fast_ur5e_planner_lora_30hz pi05_ur5e_planner_30hz
-ln -sf pi0_fast_ur5e_e2e_lora_10hz pi05_ur5e_e2e_10hz
-ln -sf pi0_fast_ur5e_e2e_lora_30hz pi05_ur5e_e2e_30hz
-ln -sf pi0_fast_ur5e_correction_lora_10hz pi05_ur5e_correction_10hz
-ln -sf pi0_fast_ur5e_correction_lora_30hz pi05_ur5e_correction_30hz
+for target in "${TARGETS[@]}"; do
+    for fps in "${FPS_LIST[@]}"; do
+        SRC="pi0_ur5e_${target}_lora_${fps}"  # computed dir
 
-# ================================================================
-# GROUP 4: Pi0.5-DROID (ALL variants) → Pi0-FAST LoRA (same quantile)
-# 12 symlinks (6 LoRA + 6 full finetune)
-# Note: 10hz LoRA versions were uploaded in Step 1 — -sf overwrites with symlinks (same data)
-# ================================================================
-ln -sf pi0_fast_ur5e_planner_lora_10hz pi05_droid_ur5e_planner_lora_10hz
-ln -sf pi0_fast_ur5e_planner_lora_30hz pi05_droid_ur5e_planner_lora_30hz
-ln -sf pi0_fast_ur5e_e2e_lora_10hz pi05_droid_ur5e_e2e_lora_10hz
-ln -sf pi0_fast_ur5e_e2e_lora_30hz pi05_droid_ur5e_e2e_lora_30hz
-ln -sf pi0_fast_ur5e_correction_lora_10hz pi05_droid_ur5e_correction_lora_10hz
-ln -sf pi0_fast_ur5e_correction_lora_30hz pi05_droid_ur5e_correction_lora_30hz
-ln -sf pi0_fast_ur5e_planner_lora_10hz pi05_droid_ur5e_planner_10hz
-ln -sf pi0_fast_ur5e_planner_lora_30hz pi05_droid_ur5e_planner_30hz
-ln -sf pi0_fast_ur5e_e2e_lora_10hz pi05_droid_ur5e_e2e_10hz
-ln -sf pi0_fast_ur5e_e2e_lora_30hz pi05_droid_ur5e_e2e_30hz
-ln -sf pi0_fast_ur5e_correction_lora_10hz pi05_droid_ur5e_correction_10hz
-ln -sf pi0_fast_ur5e_correction_lora_30hz pi05_droid_ur5e_correction_30hz
+        # Pi0 full finetune
+        ln -sf "$SRC" "pi0_ur5e_${target}_${fps}"
 
-# ================================================================
-# GROUP 5: Backward-compat (original 4 configs)
-# 1 symlink (pi0_fast_ur5e and pi0_fast_ur5e_lora already point to planner_30hz in config)
-# ================================================================
-ln -sf pi0_ur5e_lora pi0_ur5e
+        # Pi0-FAST LoRA + full
+        ln -sf "$SRC" "pi0_fast_ur5e_${target}_lora_${fps}"
+        ln -sf "$SRC" "pi0_fast_ur5e_${target}_${fps}"
+
+        # Pi0.5-base LoRA + full
+        ln -sf "$SRC" "pi05_ur5e_${target}_lora_${fps}"
+        ln -sf "$SRC" "pi05_ur5e_${target}_${fps}"
+
+        # Pi0.5-DROID LoRA + full
+        ln -sf "$SRC" "pi05_droid_ur5e_${target}_lora_${fps}"
+        ln -sf "$SRC" "pi05_droid_ur5e_${target}_${fps}"
+    done
+done
+
+# Backward-compat configs (point to planner_30hz stats)
+ln -sf pi0_ur5e_planner_lora_30hz pi0_ur5e
+ln -sf pi0_ur5e_planner_lora_30hz pi0_ur5e_lora
+ln -sf pi0_ur5e_planner_lora_30hz pi0_fast_ur5e
+ln -sf pi0_ur5e_planner_lora_30hz pi0_fast_ur5e_lora
 
 echo "Created $(ls -l | grep '^l' | wc -l) symlinks"
+# Expected: 46 symlinks (52 configs - 6 computed = 46)
 ```
 
 ---
