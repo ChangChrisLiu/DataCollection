@@ -612,20 +612,25 @@ All dataset names include an FPS suffix (e.g., `ur5e_vla_planner_30hz`) so that 
 Add this function definition (before the `OXE_STANDARDIZATION_TRANSFORMS` registry dict):
 
 ```python
-def ur5e_disassembly_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
-    """UR5e e-waste disassembly transform.
+def ur5e_vla_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    """Transform for ur5e_vla_* datasets that have action_gripper as a separate RLDS field.
 
     RLDS schema:
         observation.state: (8,) [x, y, z, roll, pitch, yaw, 0.0, gripper_0to1]
         action:            (6,) [dx, dy, dz, droll, dpitch, dyaw]
-        action_gripper:    (1,) next frame's gripper (0=open, 1=closed)
+        action_gripper:    (1,) next-step gripper position, or 1.0 for stop/trigger signals
 
     This transform:
-        1. Reads gripper from observation.state[-1] (0=open, 1=closed)
+        1. Reads gripper from action_gripper field (next-step position or stop signal)
         2. Inverts to OpenVLA convention (1=open, 0=closed)
         3. Concatenates with 6D delta EEF action -> 7D action
+
+    Note: action_gripper is the correct source because it contains the next-step gripper
+    position for normal frames and 1.0 (stop signal) for trigger/stop frames.
+    Using observation.state[-1] would give the CURRENT frame's gripper instead,
+    missing stop signals entirely.
     """
-    gripper_action = trajectory["observation"]["state"][:, -1:]
+    gripper_action = trajectory["action_gripper"][:, :1]
     gripper_action = invert_gripper_actions(tf.clip_by_value(gripper_action, 0, 1))
     trajectory["action"] = tf.concat(
         (trajectory["action"][:, :6], gripper_action), axis=-1,
@@ -636,12 +641,12 @@ def ur5e_disassembly_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, 
 Then add these entries to the `OXE_STANDARDIZATION_TRANSFORMS` dictionary:
 
 ```python
-    "ur5e_vla_e2e_10hz": ur5e_disassembly_dataset_transform,
-    "ur5e_vla_e2e_30hz": ur5e_disassembly_dataset_transform,
-    "ur5e_vla_planner_10hz": ur5e_disassembly_dataset_transform,
-    "ur5e_vla_planner_30hz": ur5e_disassembly_dataset_transform,
-    "ur5e_vla_correction_10hz": ur5e_disassembly_dataset_transform,
-    "ur5e_vla_correction_30hz": ur5e_disassembly_dataset_transform,
+    "ur5e_vla_e2e_10hz": ur5e_vla_dataset_transform,
+    "ur5e_vla_e2e_30hz": ur5e_vla_dataset_transform,
+    "ur5e_vla_planner_10hz": ur5e_vla_dataset_transform,
+    "ur5e_vla_planner_30hz": ur5e_vla_dataset_transform,
+    "ur5e_vla_correction_10hz": ur5e_vla_dataset_transform,
+    "ur5e_vla_correction_30hz": ur5e_vla_dataset_transform,
 ```
 
 #### Step 2: Register Dataset Configuration
