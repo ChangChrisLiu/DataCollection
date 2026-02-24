@@ -849,6 +849,7 @@ Features:
 │   ├── ur5e_vla_planner/             # TFDS builder config: planner target (teleop only)
 │   ├── ur5e_vla_correction/          # TFDS builder config: correction target
 │   ├── eval_summary.py               # Aggregate inference results (success rates, grouping)
+│   ├── validate_openpi_inference.py  # Offline validation: send collected frames to OpenPI server
 │   └── test_dual_camera.py           # Camera connectivity test
 ├── configs/                          # Generated config files
 │   └── camera_settings.json          # Saved camera parameters
@@ -1401,9 +1402,10 @@ cd /home/chris/openpi
 
 # Start policy server (WebSocket, port 8000)
 # Swap config/dir for whichever model you trained
-uv run scripts/serve_policy.py policy:checkpoint \
+# NOTE: --port must come BEFORE the policy:checkpoint subcommand
+uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_droid_ur5e_planner_lora_10hz \
-    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1/30000
+    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1/49999
 ```
 
 **Client code for UR5e inference:**
@@ -1514,17 +1516,15 @@ T4: conda activate tele
 ```bash
 cd /home/chris/openpi
 
-# Planner model
-uv run scripts/serve_policy.py policy:checkpoint \
+# Planner model (--port must come BEFORE policy:checkpoint)
+uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_droid_ur5e_planner_lora_10hz \
-    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1/30000 \
-    --port 8000
+    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1/49999
 
 # Correction model (separate terminal, different port)
-uv run scripts/serve_policy.py policy:checkpoint \
+uv run scripts/serve_policy.py --port 8001 policy:checkpoint \
     --policy.config pi05_droid_ur5e_correction_lora_10hz \
-    --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_10hz/correction_v1/30000 \
-    --port 8001
+    --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_10hz/correction_v1/30000
 ```
 
 #### OpenVLA Server
@@ -1689,6 +1689,30 @@ The inference pipeline includes a `SafetyMonitor` (`gello/agents/safety.py`) tha
 
 Disable with `--disable-safety` for unconstrained execution (not recommended for initial testing).
 
+### Offline Validation (Before Live Robot)
+
+Before running on the real robot, validate the inference pipeline offline using collected episode data. The script loads real `.pkl` frames, packs them exactly like `run_inference.py`, sends them to a running model server, and checks returned actions.
+
+```bash
+# Terminal A: start the OpenPI server
+cd ~/openpi
+uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+    --policy.config pi05_droid_ur5e_planner_lora_10hz \
+    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz/planner_v1/49999
+
+# Terminal B: run validation (tele conda env)
+conda activate tele
+python scripts/validate_openpi_inference.py
+```
+
+The script tests 10 frames each from a CPU and RAM episode, printing per-frame diagnostics:
+```
+[ 0] frame    0 (teleop      ) | shape (10, 7) | grip [0.008, 1.000] | delta_j0 0.0024 rad | stops 3/10 | OK
+[ 1] frame   42 (teleop      ) | shape (10, 7) | grip [0.994, 1.009] | delta_j0 0.0242 rad | stops 10/10 | OK
+```
+
+Checks: action shape `(chunk, 7)`, joint values within `±2π`, gripper in `[0, 1]`, stop signal detection (`gripper > 0.95`). Use `--cpu-episode` / `--ram-episode` to test specific episodes.
+
 ### Planner + Correction Switching
 
 In planner mode, when a grasp fails the pipeline can invoke a **correction model** to reposition the gripper before the skill retries. How this works depends on available VRAM:
@@ -1704,13 +1728,13 @@ In planner mode, when a grasp fails the pipeline can invoke a **correction model
 OpenPI models are small enough to run two servers concurrently on a single GPU:
 
 ```
-T3a: cd ~/openpi && uv run scripts/serve_policy.py policy:checkpoint \
+T3a: cd ~/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
        --policy.config pi05_droid_ur5e_planner_lora_10hz \
-       --policy.dir checkpoints/.../planner_v1/34000 --port 8000
+       --policy.dir checkpoints/.../planner_v1/49999
 
-T3b: cd ~/openpi && uv run scripts/serve_policy.py policy:checkpoint \
+T3b: cd ~/openpi && uv run scripts/serve_policy.py --port 8001 policy:checkpoint \
        --policy.config pi05_droid_ur5e_correction_lora_10hz \
-       --policy.dir checkpoints/.../correction_v1/30000 --port 8001
+       --policy.dir checkpoints/.../correction_v1/30000
 
 T4:  python experiments/run_inference.py \
        --model-type openpi --task cpu --mode planner \
