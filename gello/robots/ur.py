@@ -183,7 +183,9 @@ class URRobot(Robot):
         return 6
 
     def _get_gripper_pos(self) -> float:
-        """Get gripper position as normalized 0-1 from local tracking."""
+        """Get gripper position as normalized 0-1 from hardware reading."""
+        if self._use_gripper:
+            return self.gripper.get_actual_pos() / 255.0
         return self._gripper_pos / 255.0
 
     def get_tcp_pose_raw(self) -> np.ndarray:
