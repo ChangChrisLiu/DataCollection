@@ -167,7 +167,7 @@ class URRobot(Robot):
         self.r_inter = rtde_receive.RTDEReceiveInterface(robot_ip)
 
         self._use_gripper = not no_gripper
-        self._gripper_pos = 0  # Commanded position (0-255), for move() only — NOT for recording
+        self._gripper_pos = 0  # Commanded pos (0-255), for move() only
         if self._use_gripper:
             self.gripper = GripperHandler()
             self.gripper.connect(robot_ip, GRIPPER_PORT)
