@@ -167,7 +167,7 @@ class URRobot(Robot):
         self.r_inter = rtde_receive.RTDEReceiveInterface(robot_ip)
 
         self._use_gripper = not no_gripper
-        self._gripper_pos = 0  # Tracked locally (0-255)
+        self._gripper_pos = 0  # Commanded position (0-255), for move() only — NOT for recording
         if self._use_gripper:
             self.gripper = GripperHandler()
             self.gripper.connect(robot_ip, GRIPPER_PORT)
@@ -274,9 +274,9 @@ class URRobot(Robot):
     def get_actual_gripper_pos(self) -> int:
         """Read actual gripper position (0-255) from hardware via GET POS.
 
-        Unlike _get_gripper_pos() which returns the locally tracked value,
-        this reads the real position from the gripper. Use for grasp
-        verification where commanded vs actual position matters.
+        Both this and _get_gripper_pos() read from hardware. This returns
+        raw int (0-255) for grasp verification; _get_gripper_pos() returns
+        normalized float (0-1) for observations/recording.
         """
         if self._use_gripper:
             return self.gripper.get_actual_pos()
