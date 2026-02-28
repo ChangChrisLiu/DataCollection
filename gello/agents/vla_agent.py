@@ -78,13 +78,28 @@ def _apply_eef_delta(action: np.ndarray, robot_client, safety: Optional[SafetyMo
 
 
 class VLAAgent:
-    """Wraps a model adapter with action chunk buffering and stop detection."""
+    """Wraps a model adapter with action chunk buffering and stop detection.
+
+    Stop detection uses a combined criterion: N consecutive actions in the
+    chunk must have small delta (joint or EEF) from current state AND gripper
+    past a threshold.  This is more robust than gripper-only detection,
+    especially for CPU planner where gripper values are close to the stop
+    threshold.
+    """
+
+    # Per-task stop thresholds (tuned on 50-episode sweep, planner v3)
+    STOP_PARAMS = {
+        "cpu": {"n_consec": 3, "delta_thresh": 4e-3, "grip_thresh": 0.97},
+        "ram": {"n_consec": 5, "delta_thresh": 8e-3, "grip_thresh": 0.95},
+        "default": {"n_consec": 3, "delta_thresh": 5e-3, "grip_thresh": 0.95},
+    }
 
     def __init__(
         self,
         adapter,
         control_fps: int,
         prompt: str,
+        task: str = "default",
         safety_monitor: Optional[SafetyMonitor] = None,
     ):
         self.adapter = adapter
@@ -93,19 +108,57 @@ class VLAAgent:
         self.safety = safety_monitor
         self._action_queue: deque = deque()
         self._stop_detected = False
+        self._stop_params = self.STOP_PARAMS.get(
+            task, self.STOP_PARAMS["default"]
+        )
+
+    def _check_chunk_stop(
+        self, actions: List[np.ndarray], current_state: np.ndarray
+    ) -> bool:
+        """Combined stop criterion on the full action chunk.
+
+        Returns True if N consecutive actions satisfy:
+          - delta (predicted - current state) < delta_thresh
+          - gripper past grip_thresh (direction depends on adapter)
+        """
+        n_consec = self._stop_params["n_consec"]
+        delta_thresh = self._stop_params["delta_thresh"]
+        grip_thresh = self._stop_params["grip_thresh"]
+
+        if len(actions) < n_consec:
+            return False
+
+        for i in range(len(actions) - n_consec + 1):
+            all_ok = True
+            for k in range(n_consec):
+                a = actions[i + k]
+                # Delta: joints[:6] for OpenPI, EEF[:6] for OpenVLA/OFT
+                delta = float(np.linalg.norm(a[:6] - current_state[:6]))
+                if delta > delta_thresh:
+                    all_ok = False
+                    break
+                # Gripper check (adapter-aware direction)
+                if not self.adapter.is_stop_gripper(a, grip_thresh):
+                    all_ok = False
+                    break
+            if all_ok:
+                return True
+        return False
 
     def execute_step(self, obs: Dict[str, Any], robot_client) -> None:
         """Query model if queue empty, apply one action to robot."""
         if not self._action_queue:
             chunk = self.adapter.infer(obs, self.prompt)
+
+            # Check combined stop criterion on the full chunk
+            current_state = self.adapter.get_current_state(obs)
+            if self._check_chunk_stop(chunk, current_state):
+                self._stop_detected = True
+                return
+
             self._action_queue.extend(chunk)
 
         action = self._action_queue.popleft()
-
-        if self.adapter.is_stop_signal(action):
-            self._stop_detected = True
-            return  # Don't send stop-signal action to robot
-
         self.adapter.apply_action(action, obs, robot_client, self.safety)
 
     @property
@@ -189,9 +242,13 @@ class OpenPIAdapter:
         target[6] = np.clip(target[6], 0.0, 1.0)
         robot_client.command_joint_state(target)
 
-    def is_stop_signal(self, action: np.ndarray) -> bool:
-        """Gripper=1.0 is physically unreachable (max ~0.90), used as stop."""
-        return float(action[6]) > 0.95
+    def get_current_state(self, obs: Dict[str, Any]) -> np.ndarray:
+        """Return current joint positions for delta computation."""
+        return np.array(obs["joint_positions"][:6], dtype=np.float32)
+
+    def is_stop_gripper(self, action: np.ndarray, grip_thresh: float) -> bool:
+        """OpenPI gripper: 0=open, 1=close. Stop at high values."""
+        return float(action[6]) > grip_thresh
 
 
 # ---------------------------------------------------------------------------
@@ -259,9 +316,15 @@ class OpenVLAAdapter:
         """Apply EEF delta via moveL."""
         _apply_eef_delta(action, robot_client, safety)
 
-    def is_stop_signal(self, action: np.ndarray) -> bool:
-        """Inverted gripper: model 1.0→0.0 during training. Stop at ~0."""
-        return float(action[6]) < 0.05
+    def get_current_state(self, obs: Dict[str, Any]) -> np.ndarray:
+        """Return current EEF pose for delta computation."""
+        # For EEF delta models, actions are deltas — so "current state" is
+        # zeros (delta from zero = the delta itself, checked against thresh).
+        return np.zeros(6, dtype=np.float32)
+
+    def is_stop_gripper(self, action: np.ndarray, grip_thresh: float) -> bool:
+        """OpenVLA gripper is inverted: 1=open, 0=close. Stop at low values."""
+        return float(action[6]) < (1.0 - grip_thresh)
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +405,10 @@ class OpenVLAOFTAdapter:
         """Apply EEF delta via moveL (same as OpenVLA)."""
         _apply_eef_delta(action, robot_client, safety)
 
-    def is_stop_signal(self, action: np.ndarray) -> bool:
-        """Same as OpenVLA — inverted gripper, stop at ~0."""
-        return float(action[6]) < 0.05
+    def get_current_state(self, obs: Dict[str, Any]) -> np.ndarray:
+        """Return zeros — actions are EEF deltas, so delta=action magnitude."""
+        return np.zeros(6, dtype=np.float32)
+
+    def is_stop_gripper(self, action: np.ndarray, grip_thresh: float) -> bool:
+        """Same as OpenVLA — inverted gripper, stop at low values."""
+        return float(action[6]) < (1.0 - grip_thresh)

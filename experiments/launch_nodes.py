@@ -28,7 +28,7 @@ class Args:
     robot_port: int = 6001
     obs_port: int = 6002  # Read-only observation server port
     hostname: str = "127.0.0.1"
-    robot_ip: str = "10.125.145.89"
+    robot_ip: str = "10.125.144.209"
 
 
 def launch_robot_server(args: Args):

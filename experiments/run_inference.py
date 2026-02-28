@@ -19,7 +19,7 @@ Pipeline modes:
 
 Terminal architecture:
   T1: python experiments/launch_nodes.py --robot ur
-  T2: python experiments/launch_camera_nodes.py --camera-settings camera_settings.json
+  T2: python experiments/launch_camera_nodes.py --camera-settings configs/camera_settings.json
   T3: Start model server (see README § Inference Pipeline for per-backend commands)
   T4: python experiments/run_inference.py --model-type openpi --task cpu
 
@@ -35,7 +35,7 @@ import numpy as np
 import tyro
 from PIL import Image
 
-from gello.agents.joystick_agent import HOME_JOINTS_RAD
+from gello.agents.joystick_agent import HOME_GRIPPER_POS, HOME_JOINTS_RAD
 from gello.agents.safety import SafetyMonitor
 from gello.agents.vla_agent import (
     OpenPIAdapter,
@@ -899,7 +899,7 @@ def main(args: Args):
     # ------------------------------------------------------------------
     # 4. Create VLA agent
     # ------------------------------------------------------------------
-    agent = VLAAgent(adapter, args.fps, prompt, safety)
+    agent = VLAAgent(adapter, args.fps, prompt, task=args.task, safety_monitor=safety)
 
     # ------------------------------------------------------------------
     # 5. Create correction agent (planner mode only)
@@ -916,7 +916,8 @@ def main(args: Args):
             correction_adapter,
             args.fps,
             prompt,
-            safety,
+            task=args.task,
+            safety_monitor=safety,
         )
         print("[INIT] Correction adapter ready.")
 
@@ -957,43 +958,77 @@ def main(args: Args):
     )
 
     # ------------------------------------------------------------------
-    # 8. Move to home position
+    # 8. Verify connections + move to home position
     # ------------------------------------------------------------------
-    print("\n[INIT] Moving to home position...")
+    print("\n[INIT] Verifying robot connection...")
+    try:
+        test_obs = robot_client.get_observations()
+        print(f"[INIT] Robot OK — joints: {test_obs['joint_positions'][:3]}...")
+    except Exception as e:
+        print(f"[INIT] ERROR: Cannot reach robot server on {args.hostname}:{args.robot_port}")
+        print(f"[INIT] Make sure launch_nodes.py is running. Error: {e}")
+        return
+
+    robot_client.set_gripper_speed(255)
+    robot_client.set_gripper(HOME_GRIPPER_POS)
+    print("[INIT] Moving to home position...")
     robot_client.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
     print("[INIT] Home reached. Starting inference...\n")
 
     # ------------------------------------------------------------------
-    # 9. Run inference
+    # 9. Run inference (loop for multiple episodes)
     # ------------------------------------------------------------------
+    episode_num = 0
     try:
-        if args.mode == "planner":
-            run_planner_mode(
-                args,
-                agent,
-                correction_agent,
-                robot_client,
+        while True:
+            episode_num += 1
+            print(f"\n{'=' * 60}")
+            print(f"  EPISODE {episode_num}")
+            print(f"{'=' * 60}")
+
+            # Reset agent state for new episode
+            agent.reset()
+            if correction_agent is not None:
+                correction_agent.reset()
+            buffer = EpisodeBuffer()
+            rec_mgr = RecordingThreadManager(
                 obs_client,
                 camera_clients,
-                skill_executor,
                 buffer,
-                writer,
-                rec_mgr,
-                prompt=prompt,
+                args.record_hz,
+                args.image_size,
             )
-        elif args.mode == "e2e":
-            run_e2e_mode(
-                args,
-                agent,
-                robot_client,
-                camera_clients,
-                buffer,
-                writer,
-                rec_mgr,
-                prompt=prompt,
-            )
-        else:
-            raise ValueError(f"Unknown mode: {args.mode}")
+
+            if args.mode == "planner":
+                run_planner_mode(
+                    args,
+                    agent,
+                    correction_agent,
+                    robot_client,
+                    obs_client,
+                    camera_clients,
+                    skill_executor,
+                    buffer,
+                    writer,
+                    rec_mgr,
+                    prompt=prompt,
+                )
+            elif args.mode == "e2e":
+                run_e2e_mode(
+                    args,
+                    agent,
+                    robot_client,
+                    camera_clients,
+                    buffer,
+                    writer,
+                    rec_mgr,
+                    prompt=prompt,
+                )
+            else:
+                raise ValueError(f"Unknown mode: {args.mode}")
+
+            # After save_and_go_home, robot is at HOME. Loop for next episode.
+            print(f"\n[INFERENCE] Episode {episode_num} complete. Starting next...")
 
     except KeyboardInterrupt:
         print("\n\n[E-STOP] Ctrl+C — stopping robot...")
