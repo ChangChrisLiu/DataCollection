@@ -1563,7 +1563,7 @@ python vla-scripts/deploy.py \
 
 ### Running Inference (T4)
 
-#### Planner Mode (approach → skill → correction → skill_resume)
+#### Planner Mode (approach → reorient → skill → correction → skill_resume)
 
 ```bash
 conda activate tele
@@ -1669,6 +1669,8 @@ Per-task thresholds (tuned on 50-episode sweep with planner v3):
 
 These thresholds are defined in `VLAAgent.STOP_PARAMS` (`gello/agents/vla_agent.py`). The `--task` flag selects the correct thresholds automatically.
 
+**Post-stop reorientation (planner mode):** After the stop signal fires, the gripper is reoriented to point straight down (tool-Z = `[0,0,-1]`) while preserving XYZ position and yaw. This ensures the gripper is perfectly vertical before the skill CSV executes, regardless of any minor tilt from the planner approach. The reorientation uses the tool X-axis projected onto the world XY plane to preserve yaw, then constructs a rotation matrix with tool-Z = `[0,0,-1]`. This works for both CPU (yaw ≈ 0°) and RAM (yaw ≈ 90°) orientations.
+
 **Adapter-specific gripper direction:**
 
 | Model | Gripper Convention | Stop = gripper ... |
@@ -1693,7 +1695,7 @@ These thresholds are defined in `VLAAgent.STOP_PARAMS` (`gello/agents/vla_agent.
 | `--task` | `cpu` | Task: `cpu` or `ram` (sets both skill CSV and language prompt) |
 | `--mode` | `planner` | Pipeline mode: `planner` or `e2e` |
 | `--fps` | `10` | Control rate (must match training FPS) |
-| `--max-steps` | `300` | Timeout in inference steps |
+| `--max-steps` | `3000` | Safety timeout in inference steps (3000 = 5 min at 10Hz) |
 | `--correction-server-port` | `0` | Correction model server port (0 = disabled) |
 | `--correction-unnorm-key` | `""` | Normalization key for correction model (OpenVLA/OFT only). Empty = same as `--unnorm-key` |
 | `--checkpoint-name` | `""` | Human-readable checkpoint ID for eval tracking (e.g. `pi05d_planner_v3_49k`) |
@@ -1774,7 +1776,7 @@ T4:  python experiments/run_inference.py \
 
 #### OpenVLA/OFT: Server Swap
 
-With `--swap-server-for-correction`, the script pauses **between the planner phase and skill phase** — a natural window since the skill runs from CSV waypoints (no model needed). The operator kills the planner server, starts the correction server on the same port, and presses Enter. If the grasp fails, the correction model is already loaded with zero delay:
+With `--swap-server-for-correction`, the script pauses **between the planner phase and skill phase** — a natural window since the skill runs from CSV waypoints (no model needed). After the planner stop signal fires, the gripper is first reoriented to point straight down (tool-Z = `[0,0,-1]`, preserving yaw), then the operator kills the planner server, starts the correction server on the same port, and presses Enter. If the grasp fails, the correction model is already loaded with zero delay:
 
 ```
 T3:  cd ~/Sibo/openvla && conda activate vla && \

@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import tyro
 from PIL import Image
+from scipy.spatial.transform import Rotation
 
 from gello.agents.joystick_agent import HOME_GRIPPER_POS, HOME_JOINTS_RAD
 from gello.agents.safety import SafetyMonitor
@@ -165,8 +166,9 @@ class Args:
     # --- Timing ---
     fps: int = 10
     """Inference control rate in Hz. Must match training FPS."""
-    max_steps: int = 300
-    """Max inference steps before timeout."""
+    max_steps: int = 3000
+    """Safety timeout in inference steps (3000 = 5 min at 10Hz). The robot runs until
+    the model outputs a stable stop signal; this is only a hard ceiling."""
 
     # --- Robot (same defaults as run_collection.py) ---
     robot_port: int = 6001
@@ -522,6 +524,23 @@ def run_planner_mode(
     # ---------------------------------------------------------------
     robot_client.speed_stop()
     time.sleep(0.1)
+
+    # Reorient gripper to point straight down before skill execution.
+    # Keeps XYZ position, forces tool-Z to [0,0,-1] while preserving yaw.
+    current_tcp = robot_client.get_tcp_pose_raw()
+    R_cur = Rotation.from_rotvec(current_tcp[3:]).as_matrix()
+    tool_x = R_cur[:, 0].copy()
+    tool_x[2] = 0.0
+    tool_x /= np.linalg.norm(tool_x)
+    new_z = np.array([0.0, 0.0, -1.0])
+    new_y = np.cross(new_z, tool_x)
+    new_y /= np.linalg.norm(new_y)
+    R_vert = np.column_stack([tool_x, new_y, new_z])
+    vertical_rotvec = Rotation.from_matrix(R_vert).as_rotvec()
+    vertical_tcp = current_tcp.copy()
+    vertical_tcp[3:] = vertical_rotvec
+    print("[PLANNER] Reorienting gripper to vertical...")
+    robot_client.move_linear(vertical_tcp, speed=0.05, accel=0.1, asynchronous=False)
 
     # Server swap window: planner done, skill is CSV-only (no model needed)
     if args.swap_server_for_correction:
