@@ -108,9 +108,7 @@ class VLAAgent:
         self.safety = safety_monitor
         self._action_queue: deque = deque()
         self._stop_detected = False
-        self._stop_params = self.STOP_PARAMS.get(
-            task, self.STOP_PARAMS["default"]
-        )
+        self._stop_params = self.STOP_PARAMS.get(task, self.STOP_PARAMS["default"])
 
     def _check_chunk_stop(
         self, actions: List[np.ndarray], current_state: np.ndarray
