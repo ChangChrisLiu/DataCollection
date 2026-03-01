@@ -634,11 +634,22 @@ def run_planner_mode(
         port = args.correction_server_port or args.server_port
         print("\n" + "=" * 60)
         print("  SERVER SWAP REQUIRED")
-        print(f"  1. Kill the planner server")
-        print(f"  2. Start correction server on port {port}")
-        print("  3. Press Enter when correction server is ready...")
         print("=" * 60)
-        input()
+        print("  In T3:")
+        print("    1. Ctrl+C the planner server")
+        print(f"    2. Start the correction server on port {port}:")
+        if args.model_type == "openpi":
+            corr_cmd = get_openpi_serve_cmd(
+                args.openpi_base, "correction", args.fps, port
+            )
+            print()
+            for line in corr_cmd.split("\n"):
+                print(f"       {line}")
+            print()
+        print("    3. Wait for server to print 'Started server process'")
+        print("  Then press Enter here in T4.")
+        print("=" * 60)
+        input("  Press Enter when correction server is ready...")
 
     trigger_tcp = robot_client.get_tcp_pose_raw()
     buffer.set_phase("skill")

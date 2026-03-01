@@ -1560,26 +1560,28 @@ conda activate tele && python experiments/run_inference.py \
     --model-type openpi --openpi-base droid --mode planner --task cpu --fps 10
 ```
 
-##### Test 2: Pi0.5-DROID planner + correction @ 10Hz (two servers)
+##### Test 2: Pi0.5-DROID planner + correction @ 10Hz (server swap)
 
 ```bash
-# T3a: serve planner model (port 8000)
+# T3: start with planner model
 cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_droid_ur5e_planner_lora_10hz \
     --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz_v2/49999
 ```
 ```bash
-# T3b: serve correction model (port 8001, separate terminal)
-cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8001 policy:checkpoint \
+# T4: run inference (server swap mode — same port for both models)
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base droid --mode planner --task cpu --fps 10 \
+    --correction-server-port 8000 --swap-server-for-correction
+```
+When T4 prints "SERVER SWAP REQUIRED", Ctrl+C the planner in T3, then start correction:
+```bash
+# T3: swap to correction model (same port 8000)
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_droid_ur5e_correction_lora_10hz \
     --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_10hz/pi05_droid_ur5e_correction_lora_10hz_v2/49999
 ```
-```bash
-# T4: run inference with both servers
-conda activate tele && python experiments/run_inference.py \
-    --model-type openpi --openpi-base droid --mode planner --task cpu --fps 10 \
-    --correction-server-port 8001
-```
+Then press Enter in T4. The skill runs from CSV. If grasp fails → correction model takes over. If correction emits stop → skill resumes (absolute waypoints only).
 
 ##### Test 3: Pi0.5-DROID e2e @ 10Hz
 
@@ -1609,26 +1611,28 @@ conda activate tele && python experiments/run_inference.py \
     --model-type openpi --openpi-base droid --mode planner --task cpu --fps 30
 ```
 
-##### Test 5: Pi0.5-DROID planner + correction @ 30Hz
+##### Test 5: Pi0.5-DROID planner + correction @ 30Hz (server swap)
 
 ```bash
-# T3a: serve planner model (port 8000, 30Hz)
+# T3: start with planner model (30Hz)
 cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_droid_ur5e_planner_lora_30hz \
     --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_30hz_v2/49999
 ```
 ```bash
-# T3b: serve correction model (port 8001, 30Hz)
-cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8001 policy:checkpoint \
+# T4: run inference (server swap mode)
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base droid --mode planner --task cpu --fps 30 \
+    --correction-server-port 8000 --swap-server-for-correction
+```
+When T4 prints "SERVER SWAP REQUIRED", Ctrl+C planner in T3, then:
+```bash
+# T3: swap to correction model (30Hz)
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_droid_ur5e_correction_lora_30hz \
     --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_30hz_v2/49999
 ```
-```bash
-# T4: run inference
-conda activate tele && python experiments/run_inference.py \
-    --model-type openpi --openpi-base droid --mode planner --task cpu --fps 30 \
-    --correction-server-port 8001
-```
+Press Enter in T4.
 
 ##### Test 6: Pi0.5-DROID e2e @ 30Hz
 
@@ -1658,26 +1662,28 @@ conda activate tele && python experiments/run_inference.py \
     --model-type openpi --openpi-base base --mode planner --task cpu --fps 10
 ```
 
-##### Test 8: Pi0.5-base planner + correction @ 10Hz
+##### Test 8: Pi0.5-base planner + correction @ 10Hz (server swap)
 
 ```bash
-# T3a: serve planner model (port 8000)
+# T3: start with planner model
 cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_ur5e_planner_lora_10hz \
     --policy.dir checkpoints/pi05_ur5e_planner_lora_10hz_v2/43000
 ```
 ```bash
-# T3b: serve correction model (port 8001)
-cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8001 policy:checkpoint \
+# T4: run inference (server swap mode)
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base base --mode planner --task cpu --fps 10 \
+    --correction-server-port 8000 --swap-server-for-correction
+```
+When T4 prints "SERVER SWAP REQUIRED", Ctrl+C planner in T3, then:
+```bash
+# T3: swap to correction model
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_ur5e_correction_lora_10hz \
     --policy.dir checkpoints/pi05_ur5e_correction_lora_10hz_v2/36000
 ```
-```bash
-# T4: run inference
-conda activate tele && python experiments/run_inference.py \
-    --model-type openpi --openpi-base base --mode planner --task cpu --fps 10 \
-    --correction-server-port 8001
-```
+Press Enter in T4.
 
 ##### Test 9: Pi0.5-base e2e @ 10Hz
 
@@ -1709,26 +1715,28 @@ conda activate tele && python experiments/run_inference.py \
 
 > **Note:** This checkpoint only has 3000 training steps (barely trained). Expect poor performance.
 
-##### Test 11: Pi0.5-base planner + correction @ 30Hz
+##### Test 11: Pi0.5-base planner + correction @ 30Hz (server swap)
 
 ```bash
-# T3a: serve planner model (port 8000, 30Hz)
+# T3: start with planner model (30Hz)
 cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_ur5e_planner_lora_30hz \
     --policy.dir checkpoints/pi05_ur5e_planner_lora_30hz_v2/3000
 ```
 ```bash
-# T3b: serve correction model (port 8001, 30Hz)
-cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8001 policy:checkpoint \
+# T4: run inference (server swap mode)
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base base --mode planner --task cpu --fps 30 \
+    --correction-server-port 8000 --swap-server-for-correction
+```
+When T4 prints "SERVER SWAP REQUIRED", Ctrl+C planner in T3, then:
+```bash
+# T3: swap to correction model (30Hz)
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_ur5e_correction_lora_30hz \
     --policy.dir checkpoints/pi05_ur5e_correction_lora_30hz_v2/49999
 ```
-```bash
-# T4: run inference
-conda activate tele && python experiments/run_inference.py \
-    --model-type openpi --openpi-base base --mode planner --task cpu --fps 30 \
-    --correction-server-port 8001
-```
+Press Enter in T4.
 
 ##### Test 12: Pi0.5-base e2e @ 30Hz
 
