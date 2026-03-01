@@ -51,6 +51,69 @@ from gello.utils.transform_utils import quat_to_rotvec
 from gello.zmq_core.camera_node import ZMQClientCamera
 from gello.zmq_core.robot_node import ZMQClientRobot
 
+# ---------------------------------------------------------------------------
+# OpenPI checkpoint registry
+# ---------------------------------------------------------------------------
+
+OPENPI_ROOT = "/home/chris/openpi"
+
+# Maps (base_model, target, fps) → (config_name, checkpoint_path_relative_to_checkpoints/)
+# Config names are registered in openpi/src/openpi/training/config.py (no _v2 suffix).
+# Checkpoint dirs include _v2 suffix (retrained on fixed gripper data).
+OPENPI_CHECKPOINTS = {
+    # --- Pi0.5-DROID (droid) ---
+    ("droid", "planner", 10): ("pi05_droid_ur5e_planner_lora_10hz", "pi05_droid_ur5e_planner_lora_10hz_v2/49999"),
+    ("droid", "planner", 30): ("pi05_droid_ur5e_planner_lora_30hz", "pi05_droid_ur5e_planner_lora_30hz_v2/49999"),
+    ("droid", "e2e", 10): ("pi05_droid_ur5e_e2e_lora_10hz", "pi05_droid_ur5e_e2e_lora_10hz_v2/49999"),
+    ("droid", "e2e", 30): ("pi05_droid_ur5e_e2e_lora_30hz", "pi05_droid_ur5e_e2e_lora_30hz_v2/43000"),
+    ("droid", "correction", 10): ("pi05_droid_ur5e_correction_lora_10hz", "pi05_droid_ur5e_correction_lora_10hz/pi05_droid_ur5e_correction_lora_10hz_v2/49999"),
+    ("droid", "correction", 30): ("pi05_droid_ur5e_correction_lora_30hz", "pi05_droid_ur5e_correction_lora_30hz_v2/49999"),
+    # --- Pi0.5-base (base) ---
+    ("base", "planner", 10): ("pi05_ur5e_planner_lora_10hz", "pi05_ur5e_planner_lora_10hz_v2/43000"),
+    ("base", "planner", 30): ("pi05_ur5e_planner_lora_30hz", "pi05_ur5e_planner_lora_30hz_v2/3000"),
+    ("base", "e2e", 10): ("pi05_ur5e_e2e_lora_10hz", "pi05_ur5e_e2e_lora_10hz_v2/49999"),
+    ("base", "e2e", 30): ("pi05_ur5e_e2e_lora_30hz", "pi05_ur5e_e2e_lora_30hz_v2/49999"),
+    ("base", "correction", 10): ("pi05_ur5e_correction_lora_10hz", "pi05_ur5e_correction_lora_10hz_v2/36000"),
+    ("base", "correction", 30): ("pi05_ur5e_correction_lora_30hz", "pi05_ur5e_correction_lora_30hz_v2/49999"),
+}
+
+
+def get_openpi_serve_cmd(base: str, target: str, fps: int, port: int) -> str:
+    """Return the exact serve command for an OpenPI checkpoint."""
+    key = (base, target, fps)
+    if key not in OPENPI_CHECKPOINTS:
+        return f"# ERROR: no checkpoint for ({base}, {target}, {fps}hz)"
+    config_name, ckpt_path = OPENPI_CHECKPOINTS[key]
+    return (
+        f"cd {OPENPI_ROOT} && uv run scripts/serve_policy.py --port {port} "
+        f"policy:checkpoint \\\n"
+        f"    --policy.config {config_name} \\\n"
+        f"    --policy.dir checkpoints/{ckpt_path}"
+    )
+
+
+def print_openpi_serve_commands(args) -> None:
+    """Print the T3 serve commands needed for the current inference config."""
+    base = args.openpi_base
+    fps = args.fps
+    mode = args.mode
+
+    print("\n--- Expected T3 serve command(s) ---")
+    if mode == "planner":
+        cmd = get_openpi_serve_cmd(base, "planner", fps, args.server_port)
+        print(f"# Planner server (port {args.server_port}):")
+        print(cmd)
+        if args.correction_server_port > 0:
+            corr_port = args.correction_server_port
+            cmd = get_openpi_serve_cmd(base, "correction", fps, corr_port)
+            print(f"\n# Correction server (port {corr_port}):")
+            print(cmd)
+    elif mode == "e2e":
+        cmd = get_openpi_serve_cmd(base, "e2e", fps, args.server_port)
+        print(f"# E2E server (port {args.server_port}):")
+        print(cmd)
+    print("---\n")
+
 
 # ---------------------------------------------------------------------------
 # Recording helpers (inlined from run_collection.py to avoid import issues)
@@ -196,6 +259,9 @@ class Args:
     disable_safety: bool = False
 
     # --- OpenPI specific ---
+    openpi_base: str = "droid"
+    """OpenPI base model: "droid" (Pi0.5-DROID) or "base" (Pi0.5). Ignored for other backends."""
+
     open_loop_horizon: int = 10
     """How many of the action chunk to execute before re-querying."""
 
@@ -208,10 +274,10 @@ class Args:
 
     # --- Checkpoint tracking ---
     checkpoint_name: str = ""
-    """Human-readable checkpoint ID for eval tracking (e.g. 'pi05d_planner_v1_34k')."""
+    """Human-readable checkpoint ID for eval tracking. Auto-derived for OpenPI if empty."""
 
     correction_checkpoint_name: str = ""
-    """Human-readable checkpoint ID for correction model."""
+    """Human-readable checkpoint ID for correction model. Auto-derived for OpenPI if empty."""
 
     # --- Server swap for VRAM-constrained setups ---
     swap_server_for_correction: bool = False
@@ -854,10 +920,30 @@ def main(args: Args):
             f"Must be one of: {', '.join(TASK_INSTRUCTIONS.keys())}"
         )
 
+    # Auto-derive checkpoint names for OpenPI if not explicitly set
+    if args.model_type == "openpi":
+        target = "planner" if args.mode == "planner" else "e2e"
+        key = (args.openpi_base, target, args.fps)
+        if not args.checkpoint_name and key in OPENPI_CHECKPOINTS:
+            _, ckpt_path = OPENPI_CHECKPOINTS[key]
+            args.checkpoint_name = ckpt_path.replace("/", "_")
+        if (
+            args.mode == "planner"
+            and args.correction_server_port > 0
+            and not args.correction_checkpoint_name
+        ):
+            corr_key = (args.openpi_base, "correction", args.fps)
+            if corr_key in OPENPI_CHECKPOINTS:
+                _, ckpt_path = OPENPI_CHECKPOINTS[corr_key]
+                args.correction_checkpoint_name = ckpt_path.replace("/", "_")
+
     print("=" * 60)
     print("  VLA INFERENCE PIPELINE")
     print("=" * 60)
     print(f"  Model:    {args.model_type}")
+    if args.model_type == "openpi":
+        base_label = "Pi0.5-DROID" if args.openpi_base == "droid" else "Pi0.5-base"
+        print(f"  Base:     {base_label} ({args.openpi_base})")
     print(f"  Server:   {args.server_host}:{args.server_port}")
     print(f"  Task:     {args.task}")
     print(f"  Mode:     {args.mode}")
@@ -879,6 +965,10 @@ def main(args: Args):
     print(f"  Record:   {args.record} -> {args.data_dir}")
     print(f"  Safety:   {'disabled' if args.disable_safety else 'enabled'}")
     print("=" * 60)
+
+    # Print expected serve commands for OpenPI
+    if args.model_type == "openpi":
+        print_openpi_serve_commands(args)
 
     # ------------------------------------------------------------------
     # 1. Connect to robot + cameras

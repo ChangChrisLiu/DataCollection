@@ -850,6 +850,8 @@ Features:
 │   ├── ur5e_vla_correction/          # TFDS builder config: correction target
 │   ├── eval_summary.py               # Aggregate inference results (success rates, grouping)
 │   ├── validate_openpi_inference.py  # Offline validation: send collected frames to OpenPI server
+│   ├── validate_openvla_inference.py # Offline validation: send collected frames to OpenVLA server
+│   ├── validate_openvla_oft_inference.py # Offline validation: send collected frames to OFT server
 │   └── test_dual_camera.py           # Camera connectivity test
 ├── configs/                          # Generated config files
 │   └── camera_settings.json          # Saved camera parameters
@@ -1483,13 +1485,32 @@ pip install json-numpy requests
 
 ### Checkpoint Locations
 
-Checkpoints are saved under each model's own directory:
+| Model | Checkpoint Location |
+|-------|-------------------|
+| OpenPI | `~/openpi/checkpoints/<checkpoint_dir>/<step>/` |
+| OpenVLA | `~/Sibo/openvla/runs/<exp_name>/` |
+| OpenVLA-OFT | `~/Sibo/openvla-oft/runs/<exp_name>/` |
 
-| Model | Checkpoint Location | Example |
-|-------|-------------------|---------|
-| OpenPI | `~/openpi/checkpoints/<config>/<exp_name>/<step>/` | `~/openpi/checkpoints/pi05_droid_ur5e_planner_lora_10hz/droid_pi05_planner_v3_local/49999/` |
-| OpenVLA | `~/Sibo/openvla/runs/<exp_name>/` | `~/Sibo/openvla/runs/ur5e_planner+b16+lr-5e-4/` |
-| OpenVLA-OFT | `~/Sibo/openvla-oft/runs/<exp_name>/` | `~/Sibo/openvla-oft/runs/ur5e_planner_l1_2img/` |
+#### OpenPI Checkpoints (v2 — retrained on fixed gripper data)
+
+All 12 fine-tuned checkpoints. **Base model** = pre-trained weights (DROID is stronger). **Target** = training data subset. **Config** = registered name in openpi (used in `--policy.config`). **Checkpoint dir** = path under `~/openpi/checkpoints/` (used in `--policy.dir`).
+
+| Base | Target | FPS | Config Name | Checkpoint Dir | Step |
+|------|--------|-----|-------------|----------------|------|
+| **Pi0.5-DROID** | planner | 10 | `pi05_droid_ur5e_planner_lora_10hz` | `pi05_droid_ur5e_planner_lora_10hz_v2/49999` | 49999 |
+| | planner | 30 | `pi05_droid_ur5e_planner_lora_30hz` | `pi05_droid_ur5e_planner_lora_30hz_v2/49999` | 49999 |
+| | e2e | 10 | `pi05_droid_ur5e_e2e_lora_10hz` | `pi05_droid_ur5e_e2e_lora_10hz_v2/49999` | 49999 |
+| | e2e | 30 | `pi05_droid_ur5e_e2e_lora_30hz` | `pi05_droid_ur5e_e2e_lora_30hz_v2/43000` | 43000 |
+| | correction | 10 | `pi05_droid_ur5e_correction_lora_10hz` | `pi05_droid_ur5e_correction_lora_10hz/pi05_droid_ur5e_correction_lora_10hz_v2/49999` | 49999 |
+| | correction | 30 | `pi05_droid_ur5e_correction_lora_30hz` | `pi05_droid_ur5e_correction_lora_30hz_v2/49999` | 49999 |
+| **Pi0.5-base** | planner | 10 | `pi05_ur5e_planner_lora_10hz` | `pi05_ur5e_planner_lora_10hz_v2/43000` | 43000 |
+| | planner | 30 | `pi05_ur5e_planner_lora_30hz` | `pi05_ur5e_planner_lora_30hz_v2/3000` | 3000 |
+| | e2e | 10 | `pi05_ur5e_e2e_lora_10hz` | `pi05_ur5e_e2e_lora_10hz_v2/49999` | 49999 |
+| | e2e | 30 | `pi05_ur5e_e2e_lora_30hz` | `pi05_ur5e_e2e_lora_30hz_v2/49999` | 49999 |
+| | correction | 10 | `pi05_ur5e_correction_lora_10hz` | `pi05_ur5e_correction_lora_10hz_v2/36000` | 36000 |
+| | correction | 30 | `pi05_ur5e_correction_lora_30hz` | `pi05_ur5e_correction_lora_30hz_v2/49999` | 49999 |
+
+> **Note:** Pi0.5-base planner@30hz only has 3000 steps (barely trained). Pi0.5-DROID checkpoints are generally recommended as they have stronger pre-trained features.
 
 ### Terminal Architecture (Inference)
 
@@ -1521,19 +1542,37 @@ T4: conda activate tele
 
 #### OpenPI Server
 
+The serve command format is: `cd ~/openpi && uv run scripts/serve_policy.py --port PORT policy:checkpoint --policy.config CONFIG --policy.dir CHECKPOINT_DIR`
+
+> **Important:** `--port` must come BEFORE `policy:checkpoint`.
+
+**Decision tree** — pick base model + mode + FPS, then use the matching config/checkpoint from the table above:
+
 ```bash
 cd /home/chris/openpi
 
-# Planner model (--port must come BEFORE policy:checkpoint)
+# --- Pi0.5-DROID planner @ 10Hz (recommended starting point) ---
 uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_droid_ur5e_planner_lora_10hz \
-    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz/droid_pi05_planner_v3_local/49999
+    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz_v2/49999
 
-# Correction model (separate terminal, different port)
+# --- Pi0.5-DROID correction @ 10Hz (separate terminal, different port) ---
 uv run scripts/serve_policy.py --port 8001 policy:checkpoint \
     --policy.config pi05_droid_ur5e_correction_lora_10hz \
-    --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_10hz/<correction_exp>/49999
+    --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_10hz/pi05_droid_ur5e_correction_lora_10hz_v2/49999
+
+# --- Pi0.5-DROID e2e @ 10Hz ---
+uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+    --policy.config pi05_droid_ur5e_e2e_lora_10hz \
+    --policy.dir checkpoints/pi05_droid_ur5e_e2e_lora_10hz_v2/49999
+
+# --- Pi0.5-base planner @ 10Hz ---
+uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+    --policy.config pi05_ur5e_planner_lora_10hz \
+    --policy.dir checkpoints/pi05_ur5e_planner_lora_10hz_v2/43000
 ```
+
+> **Tip:** `run_inference.py` prints the exact serve command(s) needed for your config at startup. Just run the T4 command first and copy the printed serve command into T3.
 
 #### OpenVLA Server
 
@@ -1563,30 +1602,44 @@ python vla-scripts/deploy.py \
 
 ### Running Inference (T4)
 
-#### Planner Mode (approach → reorient → skill → correction → skill_resume)
+#### OpenPI Quick Reference
+
+For OpenPI, three flags control model selection: `--openpi-base` (droid/base), `--mode` (planner/e2e), and `--fps` (10/30). The script auto-derives checkpoint names and prints the matching T3 serve commands.
 
 ```bash
 conda activate tele
 
-# OpenPI planner only (no correction model)
+# Pi0.5-DROID planner @ 10Hz, CPU task (recommended starting point)
 python experiments/run_inference.py \
-    --model-type openpi \
-    --server-port 8000 \
-    --mode planner \
-    --task cpu \
-    --fps 10 \
-    --checkpoint-name pi05d_planner_v3_49k
+    --model-type openpi --openpi-base droid \
+    --mode planner --task cpu --fps 10
 
-# OpenPI planner + correction (two servers on different ports)
+# Pi0.5-DROID planner + correction @ 10Hz (two servers)
 python experiments/run_inference.py \
-    --model-type openpi \
-    --server-port 8000 \
-    --correction-server-port 8001 \
-    --mode planner \
-    --task cpu \
-    --fps 10 \
-    --checkpoint-name pi05d_planner_v3_49k \
-    --correction-checkpoint-name pi05d_correction_v3_49k
+    --model-type openpi --openpi-base droid \
+    --mode planner --task cpu --fps 10 \
+    --correction-server-port 8001
+
+# Pi0.5-DROID e2e @ 10Hz
+python experiments/run_inference.py \
+    --model-type openpi --openpi-base droid \
+    --mode e2e --task cpu --fps 10
+
+# Pi0.5-base planner @ 10Hz
+python experiments/run_inference.py \
+    --model-type openpi --openpi-base base \
+    --mode planner --task ram --fps 10
+
+# Pi0.5-DROID planner @ 30Hz
+python experiments/run_inference.py \
+    --model-type openpi --openpi-base droid \
+    --mode planner --task cpu --fps 30
+```
+
+#### Planner Mode (approach → reorient → skill → correction → skill_resume)
+
+```bash
+conda activate tele
 
 # OpenVLA planner + correction (single-GPU server swap)
 python experiments/run_inference.py \
@@ -1616,13 +1669,8 @@ python experiments/run_inference.py \
 ```bash
 # OpenPI e2e (prompt auto-detected from --task)
 python experiments/run_inference.py \
-    --model-type openpi \
-    --server-port 8000 \
-    --mode e2e \
-    --task cpu \
-    --fps 10 \
-    --max-steps 500 \
-    --checkpoint-name pi05d_e2e_v3_49k
+    --model-type openpi --openpi-base droid \
+    --mode e2e --task cpu --fps 10
 ```
 
 ### Language Instructions (Prompt Handling)
@@ -1690,6 +1738,7 @@ These thresholds are defined in `VLAAgent.STOP_PARAMS` (`gello/agents/vla_agent.
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--model-type` | `openpi` | Backend: `openpi`, `openvla`, or `openvla_oft` |
+| `--openpi-base` | `droid` | OpenPI base model: `droid` (Pi0.5-DROID) or `base` (Pi0.5). Ignored for other backends |
 | `--server-host` | `127.0.0.1` | Model server host |
 | `--server-port` | `8000` | Model server port |
 | `--task` | `cpu` | Task: `cpu` or `ram` (sets both skill CSV and language prompt) |
@@ -1729,7 +1778,7 @@ Before running on the real robot, validate the inference pipeline offline using 
 cd ~/openpi
 uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_droid_ur5e_planner_lora_10hz \
-    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz/droid_pi05_planner_v3_local/49999
+    --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz_v2/49999
 
 # Terminal B: run validation (tele conda env)
 conda activate tele
@@ -1743,6 +1792,37 @@ The script tests 10 frames each from a CPU and RAM episode, printing per-frame d
 ```
 
 Checks: action shape `(chunk, 7)`, joint values within `±2π`, gripper in `[0, 1]`, stop signal detection (`gripper > 0.95`). Use `--cpu-episode` / `--ram-episode` to test specific episodes.
+
+#### OpenVLA Validation
+
+```bash
+# Terminal A: start OpenVLA server
+conda activate vla && cd ~/Sibo/openvla
+python vla-scripts/deploy.py --openvla_path runs/ur5e_planner+b16+lr-5e-4 --port 8000
+
+# Terminal B: run validation
+conda activate tele
+python scripts/validate_openvla_inference.py --port 8000 --unnorm-key ur5e_vla_planner_10hz
+```
+
+Checks: single `(7,)` action shape, EEF delta ranges (position < 0.1m, rotation < 1.0 rad), inverted gripper `[0, 1]`.
+
+#### OpenVLA-OFT Validation
+
+```bash
+# Terminal A: start OFT server
+conda activate oft && cd ~/Sibo/openvla-oft
+python vla-scripts/deploy.py \
+    --pretrained_checkpoint runs/ur5e_planner_l1_2img \
+    --unnorm_key ur5e_vla_planner_10hz --use_l1_regression True \
+    --use_proprio True --num_images_in_input 2 --port 8777
+
+# Terminal B: run validation
+conda activate tele
+python scripts/validate_openvla_oft_inference.py --port 8777
+```
+
+Checks: chunk of 8 actions each `(7,)`, EEF delta ranges, 8D state format `[x,y,z,r,p,y,0.0,gripper]`.
 
 ### Planner + Correction Switching
 
@@ -1761,17 +1841,16 @@ OpenPI models are small enough to run two servers concurrently on a single GPU:
 ```
 T3a: cd ~/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
        --policy.config pi05_droid_ur5e_planner_lora_10hz \
-       --policy.dir checkpoints/.../droid_pi05_planner_v3_local/49999
+       --policy.dir checkpoints/pi05_droid_ur5e_planner_lora_10hz_v2/49999
 
 T3b: cd ~/openpi && uv run scripts/serve_policy.py --port 8001 policy:checkpoint \
        --policy.config pi05_droid_ur5e_correction_lora_10hz \
-       --policy.dir checkpoints/.../droid_pi05_correction_v3_local/49999
+       --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_10hz/pi05_droid_ur5e_correction_lora_10hz_v2/49999
 
 T4:  python experiments/run_inference.py \
-       --model-type openpi --task cpu --mode planner \
-       --server-port 8000 --correction-server-port 8001 \
-       --checkpoint-name pi05d_planner_v3_49k \
-       --correction-checkpoint-name pi05d_correction_v3_49k
+       --model-type openpi --openpi-base droid \
+       --task cpu --mode planner --fps 10 \
+       --correction-server-port 8001
 ```
 
 #### OpenVLA/OFT: Server Swap

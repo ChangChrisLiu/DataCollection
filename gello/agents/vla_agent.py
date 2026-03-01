@@ -372,9 +372,13 @@ class OpenVLAOFTAdapter:
         base_img = _resize_rgb(obs["base_rgb"], 256)
         wrist_img = _resize_rgb(obs["wrist_rgb"], 256)
 
-        joints = obs["joint_positions"][:6]
+        # State must be 8D EEF pose matching RLDS training format:
+        # [x, y, z, roll, pitch, yaw, 0.0_pad, gripper]
+        ee = obs["ee_pos_quat"]  # [x,y,z,qx,qy,qz,qw]
+        pos = ee[:3]
+        rpy = Rotation.from_quat(ee[3:7]).as_euler("xyz")
         gripper = obs["gripper_position"][0]
-        state = np.concatenate([joints, [gripper]]).astype(np.float32)
+        state = np.concatenate([pos, rpy, [0.0, gripper]]).astype(np.float32)
 
         payload = {
             "full_image": base_img,
