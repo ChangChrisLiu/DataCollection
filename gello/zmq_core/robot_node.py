@@ -51,6 +51,8 @@ class ZMQServerRobot:
                     result = self._robot.speed_stop()
                 elif method == "stop_linear":
                     result = self._robot.stop_linear()
+                elif method == "servo_stop":
+                    result = self._robot.servo_stop()
                 elif method == "get_observations":
                     result = self._robot.get_observations()
                 elif method == "get_tcp_pose_raw":
@@ -233,6 +235,12 @@ class ZMQClientRobot(Robot):
     def stop_linear(self) -> None:
         """Stop moveL motion (clears async moveL state) through ZMQ."""
         request = {"method": "stop_linear"}
+        self._socket.send(pickle.dumps(request))
+        pickle.loads(self._socket.recv())
+
+    def servo_stop(self) -> None:
+        """End servoJ session so moveL/moveJ can take over through ZMQ."""
+        request = {"method": "servo_stop"}
         self._socket.send(pickle.dumps(request))
         pickle.loads(self._socket.recv())
 

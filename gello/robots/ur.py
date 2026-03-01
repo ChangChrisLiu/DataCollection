@@ -290,6 +290,10 @@ class URRobot(Robot):
         """Stop moveL motion (clears async moveL state)."""
         self.robot.stopL()
 
+    def servo_stop(self) -> None:
+        """End servoJ session so moveL/moveJ can take over."""
+        self.robot.servoStop()
+
     def freedrive_enabled(self) -> bool:
         return self._free_drive
 

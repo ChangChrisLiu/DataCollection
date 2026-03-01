@@ -467,6 +467,26 @@ def _prompt_human_label(episode_dir) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _full_stop(robot_client) -> None:
+    """Stop all active control modes (servoJ, moveL, speedL).
+
+    Calls all three stop methods so it's safe regardless of which control
+    mode was last used.  Each is a no-op if that mode wasn't active.
+    """
+    try:
+        robot_client.servo_stop()
+    except Exception:
+        pass
+    try:
+        robot_client.stop_linear()
+    except Exception:
+        pass
+    try:
+        robot_client.speed_stop()
+    except Exception:
+        pass
+
+
 def save_and_go_home(
     robot_client,
     buffer: EpisodeBuffer,
@@ -483,7 +503,7 @@ def save_and_go_home(
     inference_fps: int = 0,
 ):
     """Stop recording, save episode, move home."""
-    robot_client.speed_stop()
+    _full_stop(robot_client)
     rec_mgr.stop()
 
     episode_dir = None
@@ -609,8 +629,8 @@ def run_planner_mode(
     # ---------------------------------------------------------------
     # Phase 2: Skill execution
     # ---------------------------------------------------------------
-    robot_client.speed_stop()
-    time.sleep(0.1)
+    _full_stop(robot_client)
+    time.sleep(0.2)
 
     # Reorient gripper to point straight down before skill execution.
     # Keeps XYZ position, forces tool-Z to [0,0,-1] while preserving yaw.
@@ -805,7 +825,7 @@ def run_planner_mode(
     # ---------------------------------------------------------------
     # Phase 4: Skill resume (absolute waypoints only)
     # ---------------------------------------------------------------
-    robot_client.speed_stop()
+    _full_stop(robot_client)
     time.sleep(0.1)
 
     buffer.set_phase("skill_resume")
@@ -1178,10 +1198,7 @@ def main(args: Args):
 
     except KeyboardInterrupt:
         print("\n\n[E-STOP] Ctrl+C — stopping robot...")
-        try:
-            robot_client.speed_stop()
-        except Exception:
-            pass
+        _full_stop(robot_client)
         rec_mgr.stop()
 
         episode_dir = None
