@@ -27,9 +27,6 @@ Ctrl+C to e-stop the robot and save the current episode.
 """
 
 import os
-import signal
-import socket
-import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -158,11 +155,6 @@ def print_openpi_serve_commands(args) -> None:
     fps = args.fps
     mode = args.mode
 
-    # Auto-swap mode manages servers as subprocesses — no T3 needed
-    if args.swap_server_for_correction and mode == "planner":
-        print("\n--- Server management: automatic (no T3 needed) ---\n")
-        return
-
     print("\n--- Expected T3 serve command(s) ---")
     if mode == "planner":
         cmd = get_openpi_serve_cmd(base, "planner", fps, args.server_port)
@@ -178,147 +170,6 @@ def print_openpi_serve_commands(args) -> None:
         print(f"# E2E server (port {args.server_port}):")
         print(cmd)
     print("---\n")
-
-
-# ---------------------------------------------------------------------------
-# OpenPI server manager (auto swap for planner ↔ correction)
-# ---------------------------------------------------------------------------
-
-
-def _get_openpi_serve_args(base: str, target: str, fps: int, port: int) -> list:
-    """Return the serve command as a flat arg list (no shell escapes needed)."""
-    key = (base, target, fps)
-    if key not in OPENPI_CHECKPOINTS:
-        raise ValueError(f"No OpenPI checkpoint for ({base}, {target}, {fps}hz)")
-    config_name, ckpt_path = OPENPI_CHECKPOINTS[key]
-    if ckpt_path is None:
-        ckpt_dir = OPENPI_ZEROSHOT_PATHS.get(base, "")
-    else:
-        ckpt_dir = f"checkpoints/{ckpt_path}"
-    return [
-        "uv",
-        "run",
-        "scripts/serve_policy.py",
-        "--port",
-        str(port),
-        "policy:checkpoint",
-        "--policy.config",
-        config_name,
-        "--policy.dir",
-        ckpt_dir,
-    ]
-
-
-def _wait_for_port(host: str, port: int, timeout: float = 300.0) -> bool:
-    """Poll until a TCP port is accepting connections."""
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        try:
-            with socket.create_connection((host, port), timeout=1.0):
-                return True
-        except (ConnectionRefusedError, OSError):
-            time.sleep(1.0)
-    return False
-
-
-class OpenPIServerManager:
-    """Manages OpenPI server subprocesses for automatic planner ↔ correction swap.
-
-    The server runs as a subprocess in ~/openpi using `uv run`. Lifecycle:
-      1. start_planner() — launch planner server, wait until ready
-      2. swap_to_correction() — kill planner, launch correction (non-blocking)
-      3. wait_for_correction() — block until correction server is ready
-      4. swap_to_planner() — kill correction, launch planner, wait until ready
-      5. shutdown() — kill whatever is running
-    """
-
-    def __init__(self, args):
-        self._args = args
-        self._process: Optional[subprocess.Popen] = None
-        self._current: str = ""  # "planner" or "correction"
-        self._host = args.server_host
-        self._port = args.correction_server_port or args.server_port
-
-    def _start(self, target: str) -> None:
-        """Start a server for the given target (planner/correction)."""
-        self._kill()
-        serve_args = _get_openpi_serve_args(
-            self._args.openpi_base,
-            target,
-            self._args.fps,
-            self._port,
-        )
-        env = os.environ.copy()
-        self._process = subprocess.Popen(
-            serve_args,
-            cwd=OPENPI_ROOT,
-            env=env,
-            stdout=None,  # inherit terminal for visibility
-            stderr=None,
-            preexec_fn=os.setsid,  # own process group for clean kill
-        )
-        self._current = target
-        print(f"[ServerManager] Started {target} server (PID {self._process.pid})")
-
-    def _kill(self) -> None:
-        """Kill the current server process if running."""
-        if self._process is not None and self._process.poll() is None:
-            print(
-                f"[ServerManager] Killing {self._current} server "
-                f"(PID {self._process.pid})..."
-            )
-            try:
-                os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
-                self._process.wait(timeout=10)
-            except Exception:
-                try:
-                    os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
-                    self._process.wait(timeout=5)
-                except Exception:
-                    pass
-            self._process = None
-            self._current = ""
-            # Wait for port to be released
-            time.sleep(2)
-
-    def start_planner(self) -> None:
-        """Start the planner server and wait for it to be ready."""
-        self._start("planner")
-        print(f"[ServerManager] Waiting for planner on port {self._port}...")
-        if _wait_for_port(self._host, self._port):
-            print(f"[ServerManager] Planner server ready on port {self._port}")
-        else:
-            print("[ServerManager] WARNING: Planner server did not respond in time")
-
-    def swap_to_correction(self) -> None:
-        """Kill planner and start correction server (non-blocking).
-
-        Call wait_for_correction() later when you actually need the server.
-        """
-        print("[ServerManager] Swapping to correction server...")
-        self._start("correction")
-
-    def wait_for_correction(self) -> None:
-        """Block until the correction server is accepting connections."""
-        print(f"[ServerManager] Waiting for correction on port {self._port}...")
-        if _wait_for_port(self._host, self._port):
-            print(f"[ServerManager] Correction server ready on port {self._port}")
-        else:
-            print("[ServerManager] WARNING: Correction server did not respond in time")
-
-    def swap_to_planner(self) -> None:
-        """Kill correction and restart planner for next episode."""
-        print("[ServerManager] Swapping back to planner server...")
-        self._start("planner")
-        print(f"[ServerManager] Waiting for planner on port {self._port}...")
-        if _wait_for_port(self._host, self._port):
-            print(f"[ServerManager] Planner server ready on port {self._port}")
-        else:
-            print("[ServerManager] WARNING: Planner server did not respond in time")
-
-    def shutdown(self) -> None:
-        """Kill whatever server is running."""
-        self._kill()
 
 
 # ---------------------------------------------------------------------------
@@ -485,10 +336,6 @@ class Args:
 
     correction_checkpoint_name: str = ""
     """Human-readable checkpoint ID for correction model. Auto-derived for OpenPI if empty."""
-
-    # --- Server swap for VRAM-constrained setups ---
-    swap_server_for_correction: bool = False
-    """After grasp failure, pause for manual server swap to correction model (single-GPU)."""
 
     # --- OpenVLA / OFT specific ---
     unnorm_key: str = "ur5e_vla_planner_10hz"
@@ -740,7 +587,6 @@ def run_planner_mode(
     writer: DatasetWriter,
     rec_mgr: RecordingThreadManager,
     prompt: str = "",
-    server_mgr: Optional[OpenPIServerManager] = None,
 ):
     """Planner inference → skill execution → optional correction → skill_resume."""
 
@@ -852,11 +698,6 @@ def run_planner_mode(
         rec_mgr.stop()
         print("\n[PIPELINE] Grasp failed — correction model needed")
 
-    # Start correction server swap in background during skill execution
-    # (skill is CSV-only, doesn't need the model server)
-    if server_mgr is not None:
-        server_mgr.swap_to_correction()
-
     print(f"[PIPELINE] Executing skill '{args.task}'...")
     completed, grasp_info = skill_executor.execute(
         args.task,
@@ -909,11 +750,7 @@ def run_planner_mode(
     # ---------------------------------------------------------------
     # Phase 3: Correction model (only reached if grasp failed)
     # ---------------------------------------------------------------
-    if (
-        correction_agent is None
-        and server_mgr is None
-        and not args.swap_server_for_correction
-    ):
+    if correction_agent is None and args.correction_server_port <= 0:
         print("[PIPELINE] No correction model configured — saving failed episode")
         save_and_go_home(
             robot_client,
@@ -932,27 +769,8 @@ def run_planner_mode(
         )
         return
 
-    # Automatic server swap (OpenPI with server manager)
-    if server_mgr is not None:
-        # Correction server was started in background during skill execution.
-        # Just wait for it to be ready.
-        server_mgr.wait_for_correction()
-        port = args.correction_server_port or args.server_port
-        correction_adapter = create_adapter(
-            args,
-            port_override=port,
-            unnorm_key_override=args.correction_unnorm_key,
-        )
-        correction_agent = VLAAgent(
-            correction_adapter,
-            args.fps,
-            prompt,
-            task=args.task,
-            safety_monitor=None if args.disable_safety else SafetyMonitor(),
-        )
-
-    # Manual server swap (non-OpenPI backends)
-    elif args.swap_server_for_correction:
+    # Manual server swap (correction_agent is None but port is configured)
+    if correction_agent is None:
         port = args.correction_server_port or args.server_port
         print("\n" + "=" * 60)
         print("  GRASP FAILED — SERVER SWAP REQUIRED")
@@ -1238,11 +1056,7 @@ def main(args: Args):
             print(f"  Correction: {args.server_host}:{args.correction_server_port}")
             if args.correction_checkpoint_name:
                 print(f"  Corr ckpt:  {args.correction_checkpoint_name}")
-            if args.swap_server_for_correction:
-                if args.model_type == "openpi":
-                    print("  Server swap: automatic (subprocess)")
-                else:
-                    print("  Server swap: on grasp failure (manual)")
+            print("  Server swap: on grasp failure (manual)")
         else:
             print("  Correction: none")
     print(f"  Robot:    {args.hostname}:{args.robot_port}")
@@ -1278,22 +1092,7 @@ def main(args: Args):
     }
 
     # ------------------------------------------------------------------
-    # 2a. Start server manager (OpenPI auto-swap mode)
-    # ------------------------------------------------------------------
-    # Must happen BEFORE adapter creation because OpenPIAdapter connects
-    # via WebSocket on construction — the server must already be listening.
-    server_mgr = None
-    if (
-        args.mode == "planner"
-        and args.swap_server_for_correction
-        and args.model_type == "openpi"
-    ):
-        server_mgr = OpenPIServerManager(args)
-        print("[INIT] Server manager ready — starting planner server...")
-        server_mgr.start_planner()
-
-    # ------------------------------------------------------------------
-    # 2b. Create model adapter
+    # 2. Create model adapter
     # ------------------------------------------------------------------
     print(f"\n[INIT] Creating {args.model_type} adapter...")
     adapter = create_adapter(args)
@@ -1320,32 +1119,26 @@ def main(args: Args):
     # 5. Create correction agent (planner mode only)
     # ------------------------------------------------------------------
     correction_agent = None
-    if (
-        args.mode == "planner"
-        and args.correction_server_port > 0
-        and not args.swap_server_for_correction
-    ):
-        # Pre-create correction adapter (dual-server mode, both already running)
-        print("[INIT] Creating correction model adapter...")
-        correction_adapter = create_adapter(
-            args,
-            port_override=args.correction_server_port,
-            unnorm_key_override=args.correction_unnorm_key,
-        )
-        correction_agent = VLAAgent(
-            correction_adapter,
-            args.fps,
-            prompt,
-            task=args.task,
-            safety_monitor=safety,
-        )
-        print("[INIT] Correction adapter ready.")
-    elif args.mode == "planner" and args.swap_server_for_correction:
-        print(
-            "[INIT] Correction via server swap (created on demand after grasp failure)."
-        )
-
-    # (Server manager already created in step 2a above, if applicable)
+    if args.mode == "planner" and args.correction_server_port > 0:
+        if args.correction_server_port != args.server_port:
+            # Dual-server mode: both planner + correction already running
+            print("[INIT] Creating correction model adapter...")
+            correction_adapter = create_adapter(
+                args,
+                port_override=args.correction_server_port,
+                unnorm_key_override=args.correction_unnorm_key,
+            )
+            correction_agent = VLAAgent(
+                correction_adapter,
+                args.fps,
+                prompt,
+                task=args.task,
+                safety_monitor=safety,
+            )
+            print("[INIT] Correction adapter ready.")
+        else:
+            # Same port — manual swap after grasp failure
+            print("[INIT] Correction via manual server swap after grasp failure.")
 
     # ------------------------------------------------------------------
     # 6. Setup skill executor (planner mode only)
@@ -1441,14 +1234,12 @@ def main(args: Args):
                     writer,
                     rec_mgr,
                     prompt=prompt,
-                    server_mgr=server_mgr,
                 )
-                # Swap back to planner for next episode
-                if server_mgr is not None:
-                    # Automatic: kill correction, restart planner
-                    server_mgr.swap_to_planner()
-                elif args.swap_server_for_correction:
-                    # Manual: prompt operator (non-OpenPI backends)
+                # If correction ran on same port, prompt to swap back
+                if (
+                    args.correction_server_port > 0
+                    and args.correction_server_port == args.server_port
+                ):
                     port = args.server_port
                     print("\n" + "=" * 60)
                     print("  SWAP BACK TO PLANNER FOR NEXT EPISODE")
@@ -1519,10 +1310,6 @@ def main(args: Args):
 
         if episode_dir is not None:
             _prompt_human_label(episode_dir)
-
-    # Clean up server manager subprocess
-    if server_mgr is not None:
-        server_mgr.shutdown()
 
     print("Inference pipeline exited.")
 
