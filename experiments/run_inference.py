@@ -587,8 +587,12 @@ def run_planner_mode(
     writer: DatasetWriter,
     rec_mgr: RecordingThreadManager,
     prompt: str = "",
-):
-    """Planner inference → skill execution → optional correction → skill_resume."""
+) -> bool:
+    """Planner inference → skill execution → optional correction → skill_resume.
+
+    Returns True if a manual server swap to correction occurred (caller
+    should prompt to swap back for the next episode).
+    """
 
     # ---------------------------------------------------------------
     # Phase 1: Planner approach (replaces human teleop)
@@ -658,7 +662,7 @@ def run_planner_mode(
             mode=args.mode,
             inference_fps=args.fps,
         )
-        return
+        return False
 
     # ---------------------------------------------------------------
     # Phase 2: Skill execution
@@ -724,7 +728,7 @@ def run_planner_mode(
             mode=args.mode,
             inference_fps=args.fps,
         )
-        return
+        return False
 
     if not grasp_failed_flag[0]:
         # Interrupted (e.g., drop detected) — abort
@@ -745,7 +749,7 @@ def run_planner_mode(
             mode=args.mode,
             inference_fps=args.fps,
         )
-        return
+        return False
 
     # ---------------------------------------------------------------
     # Phase 3: Correction model (only reached if grasp failed)
@@ -767,9 +771,10 @@ def run_planner_mode(
             mode=args.mode,
             inference_fps=args.fps,
         )
-        return
+        return False
 
     # Manual server swap (correction_agent is None but port is configured)
+    did_manual_swap = False
     if correction_agent is None:
         port = args.correction_server_port or args.server_port
         print("\n" + "=" * 60)
@@ -803,6 +808,7 @@ def run_planner_mode(
             task=args.task,
             safety_monitor=None if args.disable_safety else SafetyMonitor(),
         )
+        did_manual_swap = True
 
     buffer.set_phase("correction")
     correction_agent.reset()
@@ -867,7 +873,7 @@ def run_planner_mode(
             mode=args.mode,
             inference_fps=args.fps,
         )
-        return
+        return False
 
     # ---------------------------------------------------------------
     # Phase 4: Skill resume (absolute waypoints only)
@@ -905,6 +911,7 @@ def run_planner_mode(
         mode=args.mode,
         inference_fps=args.fps,
     )
+    return did_manual_swap
 
 
 # ---------------------------------------------------------------------------
@@ -1222,7 +1229,7 @@ def main(args: Args):
             )
 
             if args.mode == "planner":
-                run_planner_mode(
+                swapped = run_planner_mode(
                     args,
                     agent,
                     correction_agent,
@@ -1235,11 +1242,8 @@ def main(args: Args):
                     rec_mgr,
                     prompt=prompt,
                 )
-                # If correction ran on same port, prompt to swap back
-                if (
-                    args.correction_server_port > 0
-                    and args.correction_server_port == args.server_port
-                ):
+                # Only prompt to swap back if a manual swap actually happened
+                if swapped:
                     port = args.server_port
                     print("\n" + "=" * 60)
                     print("  SWAP BACK TO PLANNER FOR NEXT EPISODE")
