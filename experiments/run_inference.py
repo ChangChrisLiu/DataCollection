@@ -1506,6 +1506,7 @@ def main(args: Args):
         print("[E-STOP] Moving to home position...")
         try:
             robot_client.set_gripper_speed(255)
+            robot_client.set_gripper(HOME_GRIPPER_POS)
             robot_client.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
         except Exception:
             pass
