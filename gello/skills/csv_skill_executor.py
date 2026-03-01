@@ -29,12 +29,23 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from gello.utils.transform_utils import (
     align_pose6d_rotvecs,
     homogeneous_to_pose6d,
     pose6d_to_homogeneous,
 )
+
+def _rotation_distance(rv1: np.ndarray, rv2: np.ndarray) -> float:
+    """Geodesic distance (radians) between two rotation vectors.
+
+    Handles rotation vector representation ambiguity (e.g. angle vs 2pi-angle)
+    that causes raw np.linalg.norm(rv1 - rv2) to give wrong results.
+    """
+    R_diff = Rotation.from_rotvec(rv1) * Rotation.from_rotvec(rv2).inv()
+    return float(R_diff.magnitude())
+
 
 # Thresholds for detecting that async moveL has reached its target
 _POS_ARRIVED_M = 0.002  # 2mm position tolerance
@@ -255,7 +266,7 @@ class CSVSkillExecutor:
 
             actual = np.asarray(self._robot_client.get_tcp_pose_raw(), dtype=np.float64)
             pos_err = np.linalg.norm(actual[:3] - target[:3])
-            rot_err = np.linalg.norm(actual[3:] - target[3:])
+            rot_err = _rotation_distance(actual[3:], target[3:])
             if pos_err < _POS_ARRIVED_M and rot_err < _ROT_ARRIVED_RAD:
                 self._robot_client.stop_linear()
                 return True
@@ -317,7 +328,7 @@ class CSVSkillExecutor:
 
             actual = np.asarray(self._robot_client.get_tcp_pose_raw(), dtype=np.float64)
             pos_err = np.linalg.norm(actual[:3] - target[:3])
-            rot_err = np.linalg.norm(actual[3:] - target[3:])
+            rot_err = _rotation_distance(actual[3:], target[3:])
             if pos_err < _POS_ARRIVED_M and rot_err < _ROT_ARRIVED_RAD:
                 self._robot_client.stop_linear()
                 return True
