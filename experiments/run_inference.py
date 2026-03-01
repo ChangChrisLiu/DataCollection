@@ -435,8 +435,8 @@ class Args:
     # --- Timing ---
     fps: int = 10
     """Inference control rate in Hz. Must match training FPS."""
-    max_steps: int = 3000
-    """Safety timeout in inference steps (3000 = 5 min at 10Hz). The robot runs until
+    max_steps: int = 6000
+    """Safety timeout in inference steps (6000 = 10 min at 10Hz). The robot runs until
     the model outputs a stable stop signal; this is only a hard ceiling."""
 
     # --- Robot (same defaults as run_collection.py) ---
