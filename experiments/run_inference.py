@@ -302,7 +302,7 @@ class Args:
 
     # --- Server swap for VRAM-constrained setups ---
     swap_server_for_correction: bool = False
-    """Pause for manual server swap when correction needed (OpenVLA/OFT single-GPU)."""
+    """After grasp failure, pause for manual server swap to correction model (single-GPU)."""
 
     # --- OpenVLA / OFT specific ---
     unnorm_key: str = "ur5e_vla_planner_10hz"
@@ -649,28 +649,6 @@ def run_planner_mode(
     print("[PLANNER] Reorienting gripper to vertical...")
     robot_client.move_linear(vertical_tcp, speed=0.05, accel=0.1, asynchronous=False)
 
-    # Server swap window: planner done, skill is CSV-only (no model needed)
-    if args.swap_server_for_correction:
-        port = args.correction_server_port or args.server_port
-        print("\n" + "=" * 60)
-        print("  SERVER SWAP REQUIRED")
-        print("=" * 60)
-        print("  In T3:")
-        print("    1. Ctrl+C the planner server")
-        print(f"    2. Start the correction server on port {port}:")
-        if args.model_type == "openpi":
-            corr_cmd = get_openpi_serve_cmd(
-                args.openpi_base, "correction", args.fps, port
-            )
-            print()
-            for line in corr_cmd.split("\n"):
-                print(f"       {line}")
-            print()
-        print("    3. Wait for server to print 'Started server process'")
-        print("  Then press Enter here in T4.")
-        print("=" * 60)
-        input("  Press Enter when correction server is ready...")
-
     trigger_tcp = robot_client.get_tcp_pose_raw()
     buffer.set_phase("skill")
 
@@ -736,9 +714,9 @@ def run_planner_mode(
         return
 
     # ---------------------------------------------------------------
-    # Phase 3: Correction model
+    # Phase 3: Correction model (only reached if grasp failed)
     # ---------------------------------------------------------------
-    if correction_agent is None:
+    if correction_agent is None and not args.swap_server_for_correction:
         print("[PIPELINE] No correction model configured — saving failed episode")
         save_and_go_home(
             robot_client,
@@ -756,6 +734,42 @@ def run_planner_mode(
             inference_fps=args.fps,
         )
         return
+
+    # Server swap: grasp failed, now swap planner → correction server
+    if args.swap_server_for_correction:
+        port = args.correction_server_port or args.server_port
+        print("\n" + "=" * 60)
+        print("  GRASP FAILED — SERVER SWAP REQUIRED")
+        print("=" * 60)
+        print("  In T3:")
+        print("    1. Ctrl+C the planner server")
+        print(f"    2. Start the correction server on port {port}:")
+        if args.model_type == "openpi":
+            corr_cmd = get_openpi_serve_cmd(
+                args.openpi_base, "correction", args.fps, port
+            )
+            print()
+            for line in corr_cmd.split("\n"):
+                print(f"       {line}")
+            print()
+        print("    3. Wait for server to print 'Started server process'")
+        print("  Then press Enter here in T4.")
+        print("=" * 60)
+        input("  Press Enter when correction server is ready...")
+
+        # Create the correction agent now (same port, server has been swapped)
+        correction_adapter = create_adapter(
+            args,
+            port_override=port,
+            unnorm_key_override=args.correction_unnorm_key,
+        )
+        correction_agent = VLAAgent(
+            correction_adapter,
+            args.fps,
+            prompt,
+            task=args.task,
+            safety_monitor=None if args.disable_safety else SafetyMonitor(),
+        )
 
     buffer.set_phase("correction")
     correction_agent.reset()
@@ -1015,7 +1029,7 @@ def main(args: Args):
             if args.correction_checkpoint_name:
                 print(f"  Corr ckpt:  {args.correction_checkpoint_name}")
             if args.swap_server_for_correction:
-                print("  Server swap: enabled (manual)")
+                print("  Server swap: on grasp failure (manual)")
         else:
             print("  Correction: none")
     print(f"  Robot:    {args.hostname}:{args.robot_port}")
@@ -1071,7 +1085,12 @@ def main(args: Args):
     # 5. Create correction agent (planner mode only)
     # ------------------------------------------------------------------
     correction_agent = None
-    if args.mode == "planner" and args.correction_server_port > 0:
+    if (
+        args.mode == "planner"
+        and args.correction_server_port > 0
+        and not args.swap_server_for_correction
+    ):
+        # Pre-create correction adapter (dual-server mode, both already running)
         print("[INIT] Creating correction model adapter...")
         correction_adapter = create_adapter(
             args,
@@ -1086,6 +1105,8 @@ def main(args: Args):
             safety_monitor=safety,
         )
         print("[INIT] Correction adapter ready.")
+    elif args.mode == "planner" and args.swap_server_for_correction:
+        print("[INIT] Correction via server swap (created on demand after grasp failure).")
 
     # ------------------------------------------------------------------
     # 6. Setup skill executor (planner mode only)
@@ -1179,6 +1200,30 @@ def main(args: Args):
                     rec_mgr,
                     prompt=prompt,
                 )
+                # If server was swapped to correction, prompt to swap back
+                # for the next episode's planner phase.
+                if args.swap_server_for_correction:
+                    port = args.server_port
+                    print("\n" + "=" * 60)
+                    print("  SWAP BACK TO PLANNER FOR NEXT EPISODE")
+                    print("=" * 60)
+                    print("  In T3:")
+                    print("    1. Ctrl+C the correction server (if running)")
+                    print(f"    2. Start the planner server on port {port}:")
+                    if args.model_type == "openpi":
+                        target = "planner"
+                        plan_cmd = get_openpi_serve_cmd(
+                            args.openpi_base, target, args.fps, port
+                        )
+                        print()
+                        for line in plan_cmd.split("\n"):
+                            print(f"       {line}")
+                        print()
+                    print("    3. Wait for 'Started server process'")
+                    print("  Then press Enter here in T4.")
+                    print("=" * 60)
+                    input("  Press Enter when planner server is ready...")
+
             elif args.mode == "e2e":
                 run_e2e_mode(
                     args,

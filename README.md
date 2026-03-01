@@ -1574,14 +1574,15 @@ conda activate tele && python experiments/run_inference.py \
     --model-type openpi --openpi-base droid --mode planner --task cpu --fps 10 \
     --correction-server-port 8000 --swap-server-for-correction
 ```
-When T4 prints "SERVER SWAP REQUIRED", Ctrl+C the planner in T3, then start correction:
+The skill runs from CSV. If grasp **succeeds**, no swap needed — next episode starts automatically.
+If grasp **fails**, T4 prints "GRASP FAILED — SERVER SWAP REQUIRED". Then in T3, Ctrl+C the planner and start correction:
 ```bash
 # T3: swap to correction model (same port 8000)
 cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_droid_ur5e_correction_lora_10hz \
     --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_10hz/pi05_droid_ur5e_correction_lora_10hz_v2/49999
 ```
-Then press Enter in T4. The skill runs from CSV. If grasp fails → correction model takes over. If correction emits stop → skill resumes (absolute waypoints only).
+Press Enter in T4. Correction runs → stop → skill resumes. After the episode, T4 prompts to swap back to planner for the next episode.
 
 ##### Test 3: Pi0.5-DROID e2e @ 10Hz
 
@@ -1625,14 +1626,14 @@ conda activate tele && python experiments/run_inference.py \
     --model-type openpi --openpi-base droid --mode planner --task cpu --fps 30 \
     --correction-server-port 8000 --swap-server-for-correction
 ```
-When T4 prints "SERVER SWAP REQUIRED", Ctrl+C planner in T3, then:
+If grasp fails, T4 prints "GRASP FAILED — SERVER SWAP REQUIRED". Ctrl+C planner in T3, then:
 ```bash
 # T3: swap to correction model (30Hz)
 cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_droid_ur5e_correction_lora_30hz \
     --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_30hz_v2/49999
 ```
-Press Enter in T4.
+Press Enter in T4. After episode, T4 prompts to swap back to planner.
 
 ##### Test 6: Pi0.5-DROID e2e @ 30Hz
 
@@ -1676,14 +1677,14 @@ conda activate tele && python experiments/run_inference.py \
     --model-type openpi --openpi-base base --mode planner --task cpu --fps 10 \
     --correction-server-port 8000 --swap-server-for-correction
 ```
-When T4 prints "SERVER SWAP REQUIRED", Ctrl+C planner in T3, then:
+If grasp fails, T4 prints "GRASP FAILED — SERVER SWAP REQUIRED". Ctrl+C planner in T3, then:
 ```bash
 # T3: swap to correction model
 cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_ur5e_correction_lora_10hz \
     --policy.dir checkpoints/pi05_ur5e_correction_lora_10hz_v2/36000
 ```
-Press Enter in T4.
+Press Enter in T4. After episode, T4 prompts to swap back to planner.
 
 ##### Test 9: Pi0.5-base e2e @ 10Hz
 
@@ -1729,14 +1730,14 @@ conda activate tele && python experiments/run_inference.py \
     --model-type openpi --openpi-base base --mode planner --task cpu --fps 30 \
     --correction-server-port 8000 --swap-server-for-correction
 ```
-When T4 prints "SERVER SWAP REQUIRED", Ctrl+C planner in T3, then:
+If grasp fails, T4 prints "GRASP FAILED — SERVER SWAP REQUIRED". Ctrl+C planner in T3, then:
 ```bash
 # T3: swap to correction model (30Hz)
 cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
     --policy.config pi05_ur5e_correction_lora_30hz \
     --policy.dir checkpoints/pi05_ur5e_correction_lora_30hz_v2/49999
 ```
-Press Enter in T4.
+Press Enter in T4. After episode, T4 prompts to swap back to planner.
 
 ##### Test 12: Pi0.5-base e2e @ 30Hz
 
@@ -1928,7 +1929,7 @@ These thresholds are defined in `VLAAgent.STOP_PARAMS` (`gello/agents/vla_agent.
 | `--correction-unnorm-key` | `""` | Normalization key for correction model (OpenVLA/OFT only). Empty = same as `--unnorm-key` |
 | `--checkpoint-name` | `""` | Human-readable checkpoint ID for eval tracking (e.g. `pi05d_planner_v3_49k`) |
 | `--correction-checkpoint-name` | `""` | Human-readable checkpoint ID for correction model |
-| `--swap-server-for-correction` | `False` | Pause for manual server swap when correction needed (OpenVLA/OFT single-GPU) |
+| `--swap-server-for-correction` | `False` | After grasp failure, pause for manual server swap to correction model (single-GPU) |
 | `--open-loop-horizon` | `10` | OpenPI: chunk steps to use before re-querying |
 | `--unnorm-key` | `ur5e_vla_planner_10hz` | OpenVLA/OFT normalization stats key |
 | `--record` / `--no-record` | `True` | Record episodes for evaluation |
@@ -2032,35 +2033,39 @@ T4:  python experiments/run_inference.py \
        --correction-server-port 8001
 ```
 
-#### OpenVLA/OFT: Server Swap
+#### Server Swap (Single-GPU)
 
-With `--swap-server-for-correction`, the script pauses **between the planner phase and skill phase** — a natural window since the skill runs from CSV waypoints (no model needed). After the planner stop signal fires, the gripper is first reoriented to point straight down (tool-Z = `[0,0,-1]`, preserving yaw), then the operator kills the planner server, starts the correction server on the same port, and presses Enter. If the grasp fails, the correction model is already loaded with zero delay:
+With `--swap-server-for-correction`, the script pauses **only if the grasp fails** — the swap happens after grasp failure is detected, right before the correction model is needed. Flow:
+
+1. Planner runs → stop signal → reorient to vertical → skill executes from CSV
+2. If grasp **succeeds** → no swap needed, episode completes, next episode starts
+3. If grasp **fails** → T4 prints `GRASP FAILED — SERVER SWAP REQUIRED` with the exact correction serve command
+4. Operator swaps the server in T3, presses Enter in T4
+5. Correction model runs → stop → skill resumes (absolute waypoints only)
+6. After episode, T4 prompts to swap back to planner for the next episode
 
 ```
-T3:  cd ~/Sibo/openvla && conda activate vla && \
-     python vla-scripts/deploy.py --openvla_path <planner_ckpt> --port 8000
-
 T4:  python experiments/run_inference.py \
-       --model-type openvla --task cpu --mode planner \
+       --model-type openpi --task cpu --mode planner \
        --server-port 8000 --correction-server-port 8000 \
-       --swap-server-for-correction \
-       --unnorm-key ur5e_vla_planner_10hz \
-       --correction-unnorm-key ur5e_vla_correction_10hz \
-       --checkpoint-name vla_planner_v1 \
-       --correction-checkpoint-name vla_correction_v1
+       --swap-server-for-correction
 ```
 
-When the planner phase ends, T4 prints:
+When the grasp fails, T4 prints:
 ```
 ============================================================
-  SERVER SWAP REQUIRED
-  1. Kill the planner server
-  2. Start correction server on port 8000
-  3. Press Enter when correction server is ready...
+  GRASP FAILED — SERVER SWAP REQUIRED
+============================================================
+  In T3:
+    1. Ctrl+C the planner server
+    2. Start the correction server on port 8000:
+       <exact serve command printed here>
+    3. Wait for server to print 'Started server process'
+  Then press Enter here in T4.
 ============================================================
 ```
 
-The operator swaps the server in T3, presses Enter in T4, and the skill runs. If the grasp succeeds, the correction model is never queried. If it fails, correction is ready immediately.
+This works for all backends (OpenPI, OpenVLA, OpenVLA-OFT). For OpenPI, the correction serve command is printed automatically.
 
 #### Without Correction (Planner-Only)
 
