@@ -67,19 +67,55 @@ OPENPI_BASE_CKPT_ROOT = "/home/chris/openpi_data/openpi-assets/checkpoints"
 # Checkpoint dirs include _v2 suffix (retrained on fixed gripper data).
 OPENPI_CHECKPOINTS = {
     # --- Pi0.5-DROID fine-tuned (droid) ---
-    ("droid", "planner", 10): ("pi05_droid_ur5e_planner_lora_10hz", "pi05_droid_ur5e_planner_lora_10hz_v2/49999"),
-    ("droid", "planner", 30): ("pi05_droid_ur5e_planner_lora_30hz", "pi05_droid_ur5e_planner_lora_30hz_v2/49999"),
-    ("droid", "e2e", 10): ("pi05_droid_ur5e_e2e_lora_10hz", "pi05_droid_ur5e_e2e_lora_10hz_v2/49999"),
-    ("droid", "e2e", 30): ("pi05_droid_ur5e_e2e_lora_30hz", "pi05_droid_ur5e_e2e_lora_30hz_v2/43000"),
-    ("droid", "correction", 10): ("pi05_droid_ur5e_correction_lora_10hz", "pi05_droid_ur5e_correction_lora_10hz/pi05_droid_ur5e_correction_lora_10hz_v2/49999"),
-    ("droid", "correction", 30): ("pi05_droid_ur5e_correction_lora_30hz", "pi05_droid_ur5e_correction_lora_30hz_v2/49999"),
+    ("droid", "planner", 10): (
+        "pi05_droid_ur5e_planner_lora_10hz",
+        "pi05_droid_ur5e_planner_lora_10hz_v2/49999",
+    ),
+    ("droid", "planner", 30): (
+        "pi05_droid_ur5e_planner_lora_30hz",
+        "pi05_droid_ur5e_planner_lora_30hz_v2/49999",
+    ),
+    ("droid", "e2e", 10): (
+        "pi05_droid_ur5e_e2e_lora_10hz",
+        "pi05_droid_ur5e_e2e_lora_10hz_v2/49999",
+    ),
+    ("droid", "e2e", 30): (
+        "pi05_droid_ur5e_e2e_lora_30hz",
+        "pi05_droid_ur5e_e2e_lora_30hz_v2/43000",
+    ),
+    ("droid", "correction", 10): (
+        "pi05_droid_ur5e_correction_lora_10hz",
+        "pi05_droid_ur5e_correction_lora_10hz/pi05_droid_ur5e_correction_lora_10hz_v2/49999",
+    ),
+    ("droid", "correction", 30): (
+        "pi05_droid_ur5e_correction_lora_30hz",
+        "pi05_droid_ur5e_correction_lora_30hz_v2/49999",
+    ),
     # --- Pi0.5-base fine-tuned (base) ---
-    ("base", "planner", 10): ("pi05_ur5e_planner_lora_10hz", "pi05_ur5e_planner_lora_10hz_v2/43000"),
-    ("base", "planner", 30): ("pi05_ur5e_planner_lora_30hz", "pi05_ur5e_planner_lora_30hz_v2/3000"),
-    ("base", "e2e", 10): ("pi05_ur5e_e2e_lora_10hz", "pi05_ur5e_e2e_lora_10hz_v2/49999"),
-    ("base", "e2e", 30): ("pi05_ur5e_e2e_lora_30hz", "pi05_ur5e_e2e_lora_30hz_v2/49999"),
-    ("base", "correction", 10): ("pi05_ur5e_correction_lora_10hz", "pi05_ur5e_correction_lora_10hz_v2/36000"),
-    ("base", "correction", 30): ("pi05_ur5e_correction_lora_30hz", "pi05_ur5e_correction_lora_30hz_v2/49999"),
+    ("base", "planner", 10): (
+        "pi05_ur5e_planner_lora_10hz",
+        "pi05_ur5e_planner_lora_10hz_v2/43000",
+    ),
+    ("base", "planner", 30): (
+        "pi05_ur5e_planner_lora_30hz",
+        "pi05_ur5e_planner_lora_30hz_v2/3000",
+    ),
+    ("base", "e2e", 10): (
+        "pi05_ur5e_e2e_lora_10hz",
+        "pi05_ur5e_e2e_lora_10hz_v2/49999",
+    ),
+    ("base", "e2e", 30): (
+        "pi05_ur5e_e2e_lora_30hz",
+        "pi05_ur5e_e2e_lora_30hz_v2/49999",
+    ),
+    ("base", "correction", 10): (
+        "pi05_ur5e_correction_lora_10hz",
+        "pi05_ur5e_correction_lora_10hz_v2/36000",
+    ),
+    ("base", "correction", 30): (
+        "pi05_ur5e_correction_lora_30hz",
+        "pi05_ur5e_correction_lora_30hz_v2/49999",
+    ),
     # --- Pre-trained base models, zero-shot (no fine-tuning) ---
     # Uses non-LoRA configs (full weights) with base checkpoint + copied norm stats.
     ("droid_zeroshot", "planner", 10): ("pi05_droid_ur5e_planner_10hz", None),
@@ -160,11 +196,16 @@ def _get_openpi_serve_args(base: str, target: str, fps: int, port: int) -> list:
     else:
         ckpt_dir = f"checkpoints/{ckpt_path}"
     return [
-        "uv", "run", "scripts/serve_policy.py",
-        "--port", str(port),
+        "uv",
+        "run",
+        "scripts/serve_policy.py",
+        "--port",
+        str(port),
         "policy:checkpoint",
-        "--policy.config", config_name,
-        "--policy.dir", ckpt_dir,
+        "--policy.config",
+        config_name,
+        "--policy.dir",
+        ckpt_dir,
     ]
 
 
@@ -202,7 +243,10 @@ class OpenPIServerManager:
         """Start a server for the given target (planner/correction)."""
         self._kill()
         serve_args = _get_openpi_serve_args(
-            self._args.openpi_base, target, self._args.fps, self._port,
+            self._args.openpi_base,
+            target,
+            self._args.fps,
+            self._port,
         )
         env = os.environ.copy()
         self._process = subprocess.Popen(
@@ -244,9 +288,7 @@ class OpenPIServerManager:
         if _wait_for_port(self._host, self._port):
             print(f"[ServerManager] Planner server ready on port {self._port}")
         else:
-            print(
-                "[ServerManager] WARNING: Planner server did not respond in time"
-            )
+            print("[ServerManager] WARNING: Planner server did not respond in time")
 
     def swap_to_correction(self) -> None:
         """Kill planner and start correction server (non-blocking).
@@ -262,9 +304,7 @@ class OpenPIServerManager:
         if _wait_for_port(self._host, self._port):
             print(f"[ServerManager] Correction server ready on port {self._port}")
         else:
-            print(
-                "[ServerManager] WARNING: Correction server did not respond in time"
-            )
+            print("[ServerManager] WARNING: Correction server did not respond in time")
 
     def swap_to_planner(self) -> None:
         """Kill correction and restart planner for next episode."""
@@ -274,9 +314,7 @@ class OpenPIServerManager:
         if _wait_for_port(self._host, self._port):
             print(f"[ServerManager] Planner server ready on port {self._port}")
         else:
-            print(
-                "[ServerManager] WARNING: Planner server did not respond in time"
-            )
+            print("[ServerManager] WARNING: Planner server did not respond in time")
 
     def shutdown(self) -> None:
         """Kill whatever server is running."""
@@ -870,7 +908,11 @@ def run_planner_mode(
     # ---------------------------------------------------------------
     # Phase 3: Correction model (only reached if grasp failed)
     # ---------------------------------------------------------------
-    if correction_agent is None and server_mgr is None and not args.swap_server_for_correction:
+    if (
+        correction_agent is None
+        and server_mgr is None
+        and not args.swap_server_for_correction
+    ):
         print("[PIPELINE] No correction model configured — saving failed episode")
         save_and_go_home(
             robot_client,
@@ -1240,7 +1282,22 @@ def main(args: Args):
     }
 
     # ------------------------------------------------------------------
-    # 2. Create model adapter
+    # 2a. Start server manager (OpenPI auto-swap mode)
+    # ------------------------------------------------------------------
+    # Must happen BEFORE adapter creation because OpenPIAdapter connects
+    # via WebSocket on construction — the server must already be listening.
+    server_mgr = None
+    if (
+        args.mode == "planner"
+        and args.swap_server_for_correction
+        and args.model_type == "openpi"
+    ):
+        server_mgr = OpenPIServerManager(args)
+        print("[INIT] Server manager ready — starting planner server...")
+        server_mgr.start_planner()
+
+    # ------------------------------------------------------------------
+    # 2b. Create model adapter
     # ------------------------------------------------------------------
     print(f"\n[INIT] Creating {args.model_type} adapter...")
     adapter = create_adapter(args)
@@ -1281,19 +1338,11 @@ def main(args: Args):
         )
         print("[INIT] Correction adapter ready.")
     elif args.mode == "planner" and args.swap_server_for_correction:
-        print("[INIT] Correction via server swap (created on demand after grasp failure).")
+        print(
+            "[INIT] Correction via server swap (created on demand after grasp failure)."
+        )
 
-    # ------------------------------------------------------------------
-    # 5b. Create server manager (OpenPI auto-swap mode)
-    # ------------------------------------------------------------------
-    server_mgr = None
-    if (
-        args.mode == "planner"
-        and args.swap_server_for_correction
-        and args.model_type == "openpi"
-    ):
-        server_mgr = OpenPIServerManager(args)
-        print("[INIT] Server manager ready (automatic planner ↔ correction swap).")
+    # (Server manager already created in step 2a above, if applicable)
 
     # ------------------------------------------------------------------
     # 6. Setup skill executor (planner mode only)
@@ -1339,7 +1388,9 @@ def main(args: Args):
         test_obs = robot_client.get_observations()
         print(f"[INIT] Robot OK — joints: {test_obs['joint_positions'][:3]}...")
     except Exception as e:
-        print(f"[INIT] ERROR: Cannot reach robot server on {args.hostname}:{args.robot_port}")
+        print(
+            f"[INIT] ERROR: Cannot reach robot server on {args.hostname}:{args.robot_port}"
+        )
         print(f"[INIT] Make sure launch_nodes.py is running. Error: {e}")
         return
 
@@ -1347,10 +1398,6 @@ def main(args: Args):
     robot_client.set_gripper(HOME_GRIPPER_POS)
     print("[INIT] Moving to home position...")
     robot_client.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
-
-    # Auto-start planner server (loads model while robot homes)
-    if server_mgr is not None:
-        server_mgr.start_planner()
 
     print("[INIT] Home reached. Starting inference...\n")
 
