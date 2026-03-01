@@ -101,6 +101,7 @@ class VLAAgent:
         prompt: str,
         task: str = "default",
         safety_monitor: Optional[SafetyMonitor] = None,
+        enable_stop_detection: bool = True,
     ):
         self.adapter = adapter
         self.control_fps = control_fps
@@ -108,6 +109,7 @@ class VLAAgent:
         self.safety = safety_monitor
         self._action_queue: deque = deque()
         self._stop_detected = False
+        self._enable_stop_detection = enable_stop_detection
         self._stop_params = self.STOP_PARAMS.get(task, self.STOP_PARAMS["default"])
 
     def _check_chunk_stop(
@@ -149,10 +151,11 @@ class VLAAgent:
             chunk = self.adapter.infer(obs, self.prompt)
 
             # Check combined stop criterion on the full chunk
-            current_state = self.adapter.get_current_state(obs)
-            if self._check_chunk_stop(chunk, current_state):
-                self._stop_detected = True
-                return
+            if self._enable_stop_detection:
+                current_state = self.adapter.get_current_state(obs)
+                if self._check_chunk_stop(chunk, current_state):
+                    self._stop_detected = True
+                    return
 
             self._action_queue.extend(chunk)
 

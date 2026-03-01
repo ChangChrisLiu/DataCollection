@@ -1133,10 +1133,6 @@ def run_e2e_mode(
                 if cur_b > last_base_ts:
                     last_base_ts = cur_b
 
-        if agent.stop_detected:
-            print(f"\n[E2E] Stop signal at step {step}")
-            break
-
         obs = get_obs(robot_client, camera_clients)
 
         elapsed = time.time() - t0
@@ -1151,15 +1147,14 @@ def run_e2e_mode(
                 flush=True,
             )
 
-    outcome = "stop_signal" if agent.stop_detected else "timeout"
-    print(f"\n[E2E] Episode complete ({step + 1} steps, {outcome})")
+    print(f"\n[E2E] Episode complete ({step + 1} steps)")
     save_and_go_home(
         robot_client,
         buffer,
         writer,
         rec_mgr,
         skill_name="e2e",
-        outcome=outcome,
+        outcome="complete",
         model_type=args.model_type,
         prompt=prompt,
         checkpoint_name=args.checkpoint_name,
@@ -1311,7 +1306,14 @@ def main(args: Args):
     # ------------------------------------------------------------------
     # 4. Create VLA agent
     # ------------------------------------------------------------------
-    agent = VLAAgent(adapter, args.fps, prompt, task=args.task, safety_monitor=safety)
+    agent = VLAAgent(
+        adapter,
+        args.fps,
+        prompt,
+        task=args.task,
+        safety_monitor=safety,
+        enable_stop_detection=(args.mode != "e2e"),
+    )
 
     # ------------------------------------------------------------------
     # 5. Create correction agent (planner mode only)
