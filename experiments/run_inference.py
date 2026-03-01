@@ -1506,10 +1506,16 @@ def main(args: Args):
         print("[E-STOP] Moving to home position...")
         try:
             robot_client.set_gripper_speed(255)
+        except Exception as e:
+            print(f"[E-STOP] set_gripper_speed failed: {e}")
+        try:
             robot_client.set_gripper(HOME_GRIPPER_POS)
+        except Exception as e:
+            print(f"[E-STOP] set_gripper failed: {e}")
+        try:
             robot_client.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[E-STOP] move_joints failed: {e}")
 
         if episode_dir is not None:
             _prompt_human_label(episode_dir)
