@@ -1693,7 +1693,58 @@ conda activate tele && python experiments/run_inference.py \
     --model-type openpi --openpi-base base --mode e2e --task cpu --fps 10
 ```
 
-##### Test 10: Pi0.5-DROID zero-shot (no fine-tuning, baseline comparison)
+##### Test 10: Pi0.5-base planner @ 30Hz
+
+```bash
+# T3: serve planner model (30Hz)
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+    --policy.config pi05_ur5e_planner_lora_30hz \
+    --policy.dir checkpoints/pi05_ur5e_planner_lora_30hz_v2/3000
+```
+```bash
+# T4: run inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base base --mode planner --task cpu --fps 30
+```
+
+> **Note:** This checkpoint only has 3000 training steps (barely trained). Expect poor performance.
+
+##### Test 11: Pi0.5-base planner + correction @ 30Hz
+
+```bash
+# T3a: serve planner model (port 8000, 30Hz)
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+    --policy.config pi05_ur5e_planner_lora_30hz \
+    --policy.dir checkpoints/pi05_ur5e_planner_lora_30hz_v2/3000
+```
+```bash
+# T3b: serve correction model (port 8001, 30Hz)
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8001 policy:checkpoint \
+    --policy.config pi05_ur5e_correction_lora_30hz \
+    --policy.dir checkpoints/pi05_ur5e_correction_lora_30hz_v2/49999
+```
+```bash
+# T4: run inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base base --mode planner --task cpu --fps 30 \
+    --correction-server-port 8001
+```
+
+##### Test 12: Pi0.5-base e2e @ 30Hz
+
+```bash
+# T3: serve e2e model (30Hz)
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+    --policy.config pi05_ur5e_e2e_lora_30hz \
+    --policy.dir checkpoints/pi05_ur5e_e2e_lora_30hz_v2/49999
+```
+```bash
+# T4: run inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base base --mode e2e --task cpu --fps 30
+```
+
+##### Test 13: Pi0.5-DROID zero-shot (no fine-tuning, baseline comparison)
 
 ```bash
 # T3: serve base pre-trained model (no fine-tuning)
@@ -1707,7 +1758,7 @@ conda activate tele && python experiments/run_inference.py \
     --model-type openpi --openpi-base droid_zeroshot --mode planner --task cpu --fps 10
 ```
 
-##### Test 11: Pi0.5-base zero-shot (no fine-tuning, baseline comparison)
+##### Test 14: Pi0.5-base zero-shot (no fine-tuning, baseline comparison)
 
 ```bash
 # T3: serve base pre-trained model (no fine-tuning)
