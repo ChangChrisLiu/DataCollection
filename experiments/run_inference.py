@@ -56,25 +56,36 @@ from gello.zmq_core.robot_node import ZMQClientRobot
 # ---------------------------------------------------------------------------
 
 OPENPI_ROOT = "/home/chris/openpi"
+OPENPI_BASE_CKPT_ROOT = "/home/chris/openpi_data/openpi-assets/checkpoints"
 
 # Maps (base_model, target, fps) → (config_name, checkpoint_path_relative_to_checkpoints/)
 # Config names are registered in openpi/src/openpi/training/config.py (no _v2 suffix).
 # Checkpoint dirs include _v2 suffix (retrained on fixed gripper data).
 OPENPI_CHECKPOINTS = {
-    # --- Pi0.5-DROID (droid) ---
+    # --- Pi0.5-DROID fine-tuned (droid) ---
     ("droid", "planner", 10): ("pi05_droid_ur5e_planner_lora_10hz", "pi05_droid_ur5e_planner_lora_10hz_v2/49999"),
     ("droid", "planner", 30): ("pi05_droid_ur5e_planner_lora_30hz", "pi05_droid_ur5e_planner_lora_30hz_v2/49999"),
     ("droid", "e2e", 10): ("pi05_droid_ur5e_e2e_lora_10hz", "pi05_droid_ur5e_e2e_lora_10hz_v2/49999"),
     ("droid", "e2e", 30): ("pi05_droid_ur5e_e2e_lora_30hz", "pi05_droid_ur5e_e2e_lora_30hz_v2/43000"),
     ("droid", "correction", 10): ("pi05_droid_ur5e_correction_lora_10hz", "pi05_droid_ur5e_correction_lora_10hz/pi05_droid_ur5e_correction_lora_10hz_v2/49999"),
     ("droid", "correction", 30): ("pi05_droid_ur5e_correction_lora_30hz", "pi05_droid_ur5e_correction_lora_30hz_v2/49999"),
-    # --- Pi0.5-base (base) ---
+    # --- Pi0.5-base fine-tuned (base) ---
     ("base", "planner", 10): ("pi05_ur5e_planner_lora_10hz", "pi05_ur5e_planner_lora_10hz_v2/43000"),
     ("base", "planner", 30): ("pi05_ur5e_planner_lora_30hz", "pi05_ur5e_planner_lora_30hz_v2/3000"),
     ("base", "e2e", 10): ("pi05_ur5e_e2e_lora_10hz", "pi05_ur5e_e2e_lora_10hz_v2/49999"),
     ("base", "e2e", 30): ("pi05_ur5e_e2e_lora_30hz", "pi05_ur5e_e2e_lora_30hz_v2/49999"),
     ("base", "correction", 10): ("pi05_ur5e_correction_lora_10hz", "pi05_ur5e_correction_lora_10hz_v2/36000"),
     ("base", "correction", 30): ("pi05_ur5e_correction_lora_30hz", "pi05_ur5e_correction_lora_30hz_v2/49999"),
+    # --- Pre-trained base models, zero-shot (no fine-tuning) ---
+    # Uses non-LoRA configs (full weights) with base checkpoint + copied norm stats.
+    ("droid_zeroshot", "planner", 10): ("pi05_droid_ur5e_planner_10hz", None),
+    ("base_zeroshot", "planner", 10): ("pi05_ur5e_planner_10hz", None),
+}
+
+# Absolute paths for base model (zero-shot) checkpoints
+OPENPI_ZEROSHOT_PATHS = {
+    "droid_zeroshot": f"{OPENPI_BASE_CKPT_ROOT}/pi05_droid",
+    "base_zeroshot": f"{OPENPI_BASE_CKPT_ROOT}/pi05_base",
 }
 
 
@@ -84,6 +95,15 @@ def get_openpi_serve_cmd(base: str, target: str, fps: int, port: int) -> str:
     if key not in OPENPI_CHECKPOINTS:
         return f"# ERROR: no checkpoint for ({base}, {target}, {fps}hz)"
     config_name, ckpt_path = OPENPI_CHECKPOINTS[key]
+    if ckpt_path is None:
+        # Zero-shot base model — use absolute path
+        abs_path = OPENPI_ZEROSHOT_PATHS.get(base, "???")
+        return (
+            f"cd {OPENPI_ROOT} && uv run scripts/serve_policy.py --port {port} "
+            f"policy:checkpoint \\\n"
+            f"    --policy.config {config_name} \\\n"
+            f"    --policy.dir {abs_path}"
+        )
     return (
         f"cd {OPENPI_ROOT} && uv run scripts/serve_policy.py --port {port} "
         f"policy:checkpoint \\\n"
@@ -260,7 +280,8 @@ class Args:
 
     # --- OpenPI specific ---
     openpi_base: str = "droid"
-    """OpenPI base model: "droid" (Pi0.5-DROID) or "base" (Pi0.5). Ignored for other backends."""
+    """OpenPI base model: "droid" (Pi0.5-DROID), "base" (Pi0.5),
+    "droid_zeroshot" (pre-trained, no fine-tuning), "base_zeroshot". Ignored for other backends."""
 
     open_loop_horizon: int = 10
     """How many of the action chunk to execute before re-querying."""
@@ -942,8 +963,13 @@ def main(args: Args):
     print("=" * 60)
     print(f"  Model:    {args.model_type}")
     if args.model_type == "openpi":
-        base_label = "Pi0.5-DROID" if args.openpi_base == "droid" else "Pi0.5-base"
-        print(f"  Base:     {base_label} ({args.openpi_base})")
+        base_labels = {
+            "droid": "Pi0.5-DROID (fine-tuned)",
+            "base": "Pi0.5-base (fine-tuned)",
+            "droid_zeroshot": "Pi0.5-DROID (zero-shot, no fine-tuning)",
+            "base_zeroshot": "Pi0.5-base (zero-shot, no fine-tuning)",
+        }
+        print(f"  Base:     {base_labels.get(args.openpi_base, args.openpi_base)}")
     print(f"  Server:   {args.server_host}:{args.server_port}")
     print(f"  Task:     {args.task}")
     print(f"  Mode:     {args.mode}")
