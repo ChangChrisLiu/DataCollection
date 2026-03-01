@@ -1581,7 +1581,7 @@ conda activate vla
 cd /home/chris/Sibo/openvla
 
 python vla-scripts/deploy.py \
-    --pretrained_checkpoint runs/ur5e_planner+b16+lr-5e-4 \
+    --openvla_path runs/ur5e_planner+b16+lr-5e-4 \
     --port 8000
 ```
 
