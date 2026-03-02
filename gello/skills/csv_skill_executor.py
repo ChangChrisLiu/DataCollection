@@ -37,6 +37,7 @@ from gello.utils.transform_utils import (
     pose6d_to_homogeneous,
 )
 
+
 def _rotation_distance(rv1: np.ndarray, rv2: np.ndarray) -> float:
     """Geodesic distance (radians) between two rotation vectors.
 
