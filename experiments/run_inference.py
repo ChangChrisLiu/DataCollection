@@ -27,8 +27,12 @@ Ctrl+C to e-stop the robot and save the current episode.
 """
 
 import os
+import select
+import sys
+import termios
 import threading
 import time
+import tty
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -571,6 +575,46 @@ def save_and_go_home(
 
 
 # ---------------------------------------------------------------------------
+# Non-blocking keystroke listener (for OFT manual stop)
+# ---------------------------------------------------------------------------
+
+
+class _KeyListener:
+    """Background thread that sets a flag when the target key is pressed.
+
+    Uses raw terminal mode so single keypresses are detected without Enter.
+    Restores terminal settings on stop().
+    """
+
+    def __init__(self, key: str = "s"):
+        self.key = key
+        self.pressed = threading.Event()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._old_settings = None
+
+    def start(self) -> None:
+        self._old_settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+        self._thread = threading.Thread(target=self._listen, daemon=True)
+        self._thread.start()
+
+    def _listen(self) -> None:
+        while not self._stop.is_set():
+            if select.select([sys.stdin], [], [], 0.05)[0]:
+                ch = sys.stdin.read(1)
+                if ch == self.key:
+                    self.pressed.set()
+                    return
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._old_settings is not None:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
+            self._old_settings = None
+
+
+# ---------------------------------------------------------------------------
 # Mode A: Planner + Correction
 # ---------------------------------------------------------------------------
 
@@ -605,7 +649,22 @@ def run_planner_mode(
     obs = get_obs(robot_client, camera_clients)
     dt = 1.0 / args.fps
 
-    print(f"\n[PLANNER] Starting approach ({args.max_steps} max steps @ {args.fps} Hz)")
+    # OFT manual stop: operator presses 's', then delta must also be small.
+    oft_manual_stop = args.model_type == "openvla_oft" and args.mode == "planner"
+    key_listener = None
+    s_pressed = False
+    manual_stop_triggered = False
+    if oft_manual_stop:
+        key_listener = _KeyListener(key="s")
+        key_listener.start()
+        print(
+            f"\n[PLANNER] Starting approach ({args.max_steps} max steps @ {args.fps} Hz)"
+        )
+        print("[PLANNER] OFT mode — press 's' to signal stop (delta check follows)")
+    else:
+        print(
+            f"\n[PLANNER] Starting approach ({args.max_steps} max steps @ {args.fps} Hz)"
+        )
 
     for step in range(args.max_steps):
         t0 = time.time()
@@ -626,9 +685,31 @@ def run_planner_mode(
                 if cur_b > last_base_ts:
                     last_base_ts = cur_b
 
+        # --- Stop detection ---
         if agent.stop_detected:
+            # Automatic stop (OpenPI / OpenVLA)
             print(f"\n[PLANNER] Stop signal at step {step} — triggering skill")
             break
+
+        if oft_manual_stop:
+            # Check if 's' was pressed
+            if not s_pressed and key_listener.pressed.is_set():
+                s_pressed = True
+                print(
+                    f"\n[PLANNER] 's' pressed at step {step}"
+                    " — waiting for delta confirmation..."
+                )
+
+            # After 's' pressed, check EEF delta each chunk
+            if s_pressed:
+                current_state = agent.adapter.get_current_state(obs)
+                if agent._check_chunk_stop(list(agent._action_queue), current_state):
+                    manual_stop_triggered = True
+                    print(
+                        f"[PLANNER] Delta confirmed at step {step}"
+                        " — triggering skill"
+                    )
+                    break
 
         obs = get_obs(robot_client, camera_clients)
 
@@ -639,14 +720,19 @@ def run_planner_mode(
 
         # Status display (~1 Hz)
         if step > 0 and step % args.fps == 0:
+            suffix = " [s pressed, waiting delta...]" if s_pressed else ""
             print(
                 f"\r[PLANNER] step {step}/{args.max_steps} | "
-                f"frames: {buffer.num_frames}     ",
+                f"frames: {buffer.num_frames}{suffix}     ",
                 end="",
                 flush=True,
             )
 
-    if not agent.stop_detected:
+    if key_listener is not None:
+        key_listener.stop()
+
+    stop_ok = agent.stop_detected or manual_stop_triggered
+    if not stop_ok:
         print(f"\n[PLANNER] Max steps ({args.max_steps}) reached without stop signal")
         save_and_go_home(
             robot_client,
@@ -1113,13 +1199,16 @@ def main(args: Args):
     # ------------------------------------------------------------------
     # 4. Create VLA agent
     # ------------------------------------------------------------------
+    # OFT uses manual stop (operator presses 's') + delta confirmation,
+    # so disable automatic stop detection for OFT planner mode.
+    auto_stop = args.mode != "e2e" and args.model_type != "openvla_oft"
     agent = VLAAgent(
         adapter,
         args.fps,
         prompt,
         task=args.task,
         safety_monitor=safety,
-        enable_stop_detection=(args.mode != "e2e"),
+        enable_stop_detection=auto_stop,
     )
 
     # ------------------------------------------------------------------
