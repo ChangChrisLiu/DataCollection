@@ -1488,8 +1488,8 @@ pip install json-numpy requests
 | Model | Checkpoint Location |
 |-------|-------------------|
 | OpenPI | `~/openpi/checkpoints/<checkpoint_dir>/<step>/` |
-| OpenVLA | `~/Sibo/openvla/runs/<exp_name>/` |
-| OpenVLA-OFT | `~/Sibo/openvla-oft/runs/<exp_name>/` |
+| OpenVLA | `/home/chris/Sibo/IROS-VLA/OpenVLA/<exp_name>/` |
+| OpenVLA-OFT | `/home/chris/Sibo/IROS-VLA/OpenVLA-OFT/<exp_name>/` |
 
 #### OpenPI Checkpoints (v2 — retrained on fixed gripper data)
 
@@ -1511,6 +1511,36 @@ All 12 fine-tuned checkpoints. **Base model** = pre-trained weights (DROID is st
 | | correction | 30 | `pi05_ur5e_correction_lora_30hz` | `pi05_ur5e_correction_lora_30hz_v2/49999` | 49999 |
 
 > **Note:** Pi0.5-base planner@30hz only has 3000 steps (barely trained). Pi0.5-DROID checkpoints are generally recommended as they have stronger pre-trained features.
+
+#### OpenVLA Checkpoints
+
+All 6 fine-tuned checkpoints at `/home/chris/Sibo/IROS-VLA/OpenVLA/`. LoRA weights have been merged locally on the deployment GPU. **unnorm_key** = dataset statistics key passed to the server (matches RLDS dataset name).
+
+| Target | FPS | Checkpoint Directory | unnorm_key |
+|--------|-----|---------------------|------------|
+| planner | 10 | `openvla-7b+ur5e_vla_planner_10hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug` | `ur5e_vla_planner_10hz` |
+| planner | 30 | `openvla-7b+ur5e_vla_planner_30hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug` | `ur5e_vla_planner_30hz` |
+| e2e | 10 | `openvla-7b+ur5e_vla_e2e_10hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug` | `ur5e_vla_e2e_10hz` |
+| e2e | 30 | `openvla-7b+ur5e_vla_e2e_30hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug` | `ur5e_vla_e2e_30hz` |
+| correction | 10 | `openvla-7b+ur5e_vla_correction_10hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug` | `ur5e_vla_correction_10hz` |
+| correction | 30 | `openvla-7b+ur5e_vla_correction_30hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug` | `ur5e_vla_correction_30hz` |
+| **Base (zero-shot)** | — | `openvla-7b` (in OFT directory, shared) | `bridge_orig` |
+
+> **Note:** The base `openvla-7b` model lives at `/home/chris/Sibo/IROS-VLA/OpenVLA-OFT/openvla-7b` (shared by both OpenVLA and OFT). It can also be referenced by HuggingFace ID `openvla/openvla-7b` (the default in `deploy.py`).
+
+#### OpenVLA-OFT Checkpoints
+
+All 6 fine-tuned checkpoints at `/home/chris/Sibo/IROS-VLA/OpenVLA-OFT/`. Each uses `--use_l1_regression True --use_proprio True --num_images_in_input 2`. LoRA weights have been merged locally on the deployment GPU.
+
+| Target | FPS | Checkpoint Directory | unnorm_key |
+|--------|-----|---------------------|------------|
+| planner | 10 | `openvla-7b+ur5e_vla_planner_10hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` | `ur5e_vla_planner_10hz` |
+| planner | 30 | `openvla-7b+ur5e_vla_planner_30hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` | `ur5e_vla_planner_30hz` |
+| e2e | 10 | `openvla-7b+ur5e_vla_e2e_10hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` | `ur5e_vla_e2e_10hz` |
+| e2e | 30 | `openvla-7b+ur5e_vla_e2e_30hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` | `ur5e_vla_e2e_30hz` |
+| correction | 10 | `openvla-7b+ur5e_vla_correction_10hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` | `ur5e_vla_correction_10hz` |
+| correction | 30 | `openvla-7b+ur5e_vla_correction_30hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` | `ur5e_vla_correction_30hz` |
+| **Base (zero-shot)** | — | `openvla-7b` | `bridge_orig` |
 
 ### Terminal Architecture (Inference)
 
@@ -1753,17 +1783,110 @@ conda activate tele && python experiments/run_inference.py \
 
 > **Tip:** `run_inference.py` prints the exact T3 serve command(s) at startup. You can run the T4 command first (it will fail to connect), copy the printed serve command into T3, then re-run T4.
 
-#### OpenVLA Server + Inference
+#### OpenVLA: Complete Copy-Paste Commands
+
+All OpenVLA checkpoints are at `/home/chris/Sibo/IROS-VLA/OpenVLA/`. Each test requires a T3 serve command and a matching T4 inference command.
+
+##### VLA Test 1: Planner @ 10Hz
 
 ```bash
-# T3: serve OpenVLA model
+# T3: serve OpenVLA planner model
 conda activate vla && cd /home/chris/Sibo/openvla
-python vla-scripts/deploy.py --openvla_path runs/ur5e_planner+b16+lr-5e-4 --port 8000
+python vla-scripts/deploy.py \
+    --openvla_path /home/chris/Sibo/IROS-VLA/OpenVLA/openvla-7b+ur5e_vla_planner_10hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug \
+    --port 8000
 ```
 ```bash
 # T4: run inference
 conda activate tele && python experiments/run_inference.py \
-    --model-type openvla --server-port 8000 --mode planner --task cpu --fps 10
+    --model-type openvla --server-port 8000 --mode planner --task cpu --fps 10 \
+    --unnorm-key ur5e_vla_planner_10hz
+```
+
+##### VLA Test 2: Planner + correction @ 10Hz (manual server swap)
+
+```bash
+# T3: serve OpenVLA planner model (same as VLA Test 1)
+# T4: run inference — on grasp failure, script prompts to swap server in T3
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla --server-port 8000 --mode planner --task cpu --fps 10 \
+    --unnorm-key ur5e_vla_planner_10hz \
+    --correction-server-port 8000 --correction-unnorm-key ur5e_vla_correction_10hz
+```
+
+##### VLA Test 3: E2E @ 10Hz
+
+```bash
+# T3: serve OpenVLA e2e model
+conda activate vla && cd /home/chris/Sibo/openvla
+python vla-scripts/deploy.py \
+    --openvla_path /home/chris/Sibo/IROS-VLA/OpenVLA/openvla-7b+ur5e_vla_e2e_10hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug \
+    --port 8000
+```
+```bash
+# T4: run inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla --server-port 8000 --mode e2e --task cpu --fps 10 \
+    --unnorm-key ur5e_vla_e2e_10hz
+```
+
+##### VLA Test 4: Planner @ 30Hz
+
+```bash
+# T3: serve OpenVLA planner model (30Hz)
+conda activate vla && cd /home/chris/Sibo/openvla
+python vla-scripts/deploy.py \
+    --openvla_path /home/chris/Sibo/IROS-VLA/OpenVLA/openvla-7b+ur5e_vla_planner_30hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug \
+    --port 8000
+```
+```bash
+# T4: run inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla --server-port 8000 --mode planner --task cpu --fps 30 \
+    --unnorm-key ur5e_vla_planner_30hz
+```
+
+##### VLA Test 5: Planner + correction @ 30Hz (manual server swap)
+
+```bash
+# T3: serve OpenVLA planner model (same as VLA Test 4)
+# T4: run inference — on grasp failure, script prompts to swap server in T3
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla --server-port 8000 --mode planner --task cpu --fps 30 \
+    --unnorm-key ur5e_vla_planner_30hz \
+    --correction-server-port 8000 --correction-unnorm-key ur5e_vla_correction_30hz
+```
+
+##### VLA Test 6: E2E @ 30Hz
+
+```bash
+# T3: serve OpenVLA e2e model (30Hz)
+conda activate vla && cd /home/chris/Sibo/openvla
+python vla-scripts/deploy.py \
+    --openvla_path /home/chris/Sibo/IROS-VLA/OpenVLA/openvla-7b+ur5e_vla_e2e_30hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug \
+    --port 8000
+```
+```bash
+# T4: run inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla --server-port 8000 --mode e2e --task cpu --fps 30 \
+    --unnorm-key ur5e_vla_e2e_30hz
+```
+
+##### VLA Test 7: Base zero-shot (no fine-tuning)
+
+```bash
+# T3: serve base (unfinetuned) OpenVLA model
+conda activate vla && cd /home/chris/Sibo/openvla
+python vla-scripts/deploy.py \
+    --openvla_path /home/chris/Sibo/IROS-VLA/OpenVLA-OFT/openvla-7b \
+    --port 8000
+```
+```bash
+# T4: run inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla --server-port 8000 --mode planner --task cpu --fps 10 \
+    --unnorm-key bridge_orig
 ```
 
 #### OpenVLA-OFT Server + Inference
@@ -1870,6 +1993,56 @@ conda activate tele && python experiments/run_inference.py \
     --model-type openvla_oft --server-port 8777 --mode e2e --task cpu --fps 30 \
     --unnorm-key ur5e_vla_e2e_30hz
 ```
+
+##### OFT Test 7: Base zero-shot (no fine-tuning)
+
+```bash
+# T3: serve base (unfinetuned) OFT model
+conda activate oft && cd /home/chris/Sibo/openvla-oft
+python vla-scripts/deploy.py \
+    --pretrained_checkpoint /home/chris/Sibo/IROS-VLA/OpenVLA-OFT/openvla-7b \
+    --unnorm_key bridge_orig --use_l1_regression True \
+    --use_proprio True --num_images_in_input 2 --port 8777
+```
+```bash
+# T4: run inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla_oft --server-port 8777 --mode planner --task cpu --fps 10 \
+    --unnorm-key bridge_orig
+```
+
+#### Complete Test Matrix (28 tests)
+
+| # | Backend | Description | Mode | FPS |
+|---|---------|------------|------|-----|
+| PI-1 | OpenPI | Pi0.5-DROID planner | planner | 10 |
+| PI-2 | OpenPI | Pi0.5-DROID planner + correction | planner | 10 |
+| PI-3 | OpenPI | Pi0.5-DROID e2e | e2e | 10 |
+| PI-4 | OpenPI | Pi0.5-DROID planner | planner | 30 |
+| PI-5 | OpenPI | Pi0.5-DROID planner + correction | planner | 30 |
+| PI-6 | OpenPI | Pi0.5-DROID e2e | e2e | 30 |
+| PI-7 | OpenPI | Pi0.5-base planner | planner | 10 |
+| PI-8 | OpenPI | Pi0.5-base planner + correction | planner | 10 |
+| PI-9 | OpenPI | Pi0.5-base e2e | e2e | 10 |
+| PI-10 | OpenPI | Pi0.5-base planner | planner | 30 |
+| PI-11 | OpenPI | Pi0.5-base planner + correction | planner | 30 |
+| PI-12 | OpenPI | Pi0.5-base e2e | e2e | 30 |
+| PI-13 | OpenPI | Pi0.5-DROID zero-shot | planner | 10 |
+| PI-14 | OpenPI | Pi0.5-base zero-shot | planner | 10 |
+| VLA-1 | OpenVLA | Planner | planner | 10 |
+| VLA-2 | OpenVLA | Planner + correction | planner | 10 |
+| VLA-3 | OpenVLA | E2E | e2e | 10 |
+| VLA-4 | OpenVLA | Planner | planner | 30 |
+| VLA-5 | OpenVLA | Planner + correction | planner | 30 |
+| VLA-6 | OpenVLA | E2E | e2e | 30 |
+| VLA-7 | OpenVLA | Base zero-shot | planner | 10 |
+| OFT-1 | OpenVLA-OFT | Planner | planner | 10 |
+| OFT-2 | OpenVLA-OFT | Planner + correction | planner | 10 |
+| OFT-3 | OpenVLA-OFT | E2E | e2e | 10 |
+| OFT-4 | OpenVLA-OFT | Planner | planner | 30 |
+| OFT-5 | OpenVLA-OFT | Planner + correction | planner | 30 |
+| OFT-6 | OpenVLA-OFT | E2E | e2e | 30 |
+| OFT-7 | OpenVLA-OFT | Base zero-shot | planner | 10 |
 
 ### Planner + Correction Mode Details
 
@@ -2036,7 +2209,9 @@ Checks: action shape `(chunk, 7)`, joint values within `±2π`, gripper in `[0, 
 ```bash
 # Terminal A: start OpenVLA server
 conda activate vla && cd ~/Sibo/openvla
-python vla-scripts/deploy.py --openvla_path runs/ur5e_planner+b16+lr-5e-4 --port 8000
+python vla-scripts/deploy.py \
+    --openvla_path /home/chris/Sibo/IROS-VLA/OpenVLA/openvla-7b+ur5e_vla_planner_10hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug \
+    --port 8000
 
 # Terminal B: run validation
 conda activate tele
@@ -2051,7 +2226,7 @@ Checks: single `(7,)` action shape, EEF delta ranges (position < 0.1m, rotation 
 # Terminal A: start OFT server
 conda activate oft && cd ~/Sibo/openvla-oft
 python vla-scripts/deploy.py \
-    --pretrained_checkpoint runs/ur5e_planner_l1_2img \
+    --pretrained_checkpoint /home/chris/Sibo/IROS-VLA/OpenVLA-OFT/openvla-7b+ur5e_vla_planner_10hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state \
     --unnorm_key ur5e_vla_planner_10hz --use_l1_regression True \
     --use_proprio True --num_images_in_input 2 --port 8777
 
