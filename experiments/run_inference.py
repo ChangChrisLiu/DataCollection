@@ -1228,6 +1228,14 @@ def main(args: Args):
                 args.image_size,
             )
 
+            # OpenVLA: lower the end-effector 0.1m from home before each
+            # episode so the model starts closer to the workspace.
+            if args.model_type == "openvla":
+                tcp = obs_client.get_tcp_pose_raw()
+                tcp[2] -= 0.1  # lower Z by 0.1 m
+                print("[INIT] OpenVLA pre-start: lowering EEF by 0.1 m...")
+                robot_client.move_linear(tcp, speed=0.1, accel=0.3)
+
             if args.mode == "planner":
                 swapped = run_planner_mode(
                     args,
