@@ -1768,18 +1768,107 @@ conda activate tele && python experiments/run_inference.py \
 
 #### OpenVLA-OFT Server + Inference
 
+All OFT checkpoints are at `/home/chris/Sibo/IROS-VLA/OpenVLA-OFT/`. Each uses `--use_l1_regression True --use_proprio True --num_images_in_input 2`. LoRA weights have been merged locally on the deployment GPU.
+
+Shorthand for checkpoint paths (used in commands below):
+
+| Model | Checkpoint directory name |
+|-------|--------------------------|
+| planner 10Hz | `openvla-7b+ur5e_vla_planner_10hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` |
+| planner 30Hz | `openvla-7b+ur5e_vla_planner_30hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` |
+| e2e 10Hz | `openvla-7b+ur5e_vla_e2e_10hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` |
+| e2e 30Hz | `openvla-7b+ur5e_vla_e2e_30hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` |
+| correction 10Hz | `openvla-7b+ur5e_vla_correction_10hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` |
+| correction 30Hz | `openvla-7b+ur5e_vla_correction_30hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state` |
+
+##### OFT Test 1: Planner @ 10Hz
+
 ```bash
-# T3: serve OFT model
+# T3: serve OFT planner model
 conda activate oft && cd /home/chris/Sibo/openvla-oft
 python vla-scripts/deploy.py \
-    --pretrained_checkpoint runs/ur5e_planner_l1_2img \
+    --pretrained_checkpoint /home/chris/Sibo/IROS-VLA/OpenVLA-OFT/openvla-7b+ur5e_vla_planner_10hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state \
     --unnorm_key ur5e_vla_planner_10hz --use_l1_regression True \
     --use_proprio True --num_images_in_input 2 --port 8777
 ```
 ```bash
 # T4: run inference
 conda activate tele && python experiments/run_inference.py \
-    --model-type openvla_oft --server-port 8777 --mode planner --task cpu --fps 10
+    --model-type openvla_oft --server-port 8777 --mode planner --task cpu --fps 10 \
+    --unnorm-key ur5e_vla_planner_10hz
+```
+
+##### OFT Test 2: Planner + correction @ 10Hz (manual server swap)
+
+```bash
+# T3: serve OFT planner model (same as OFT Test 1)
+# T4: run inference — on grasp failure, script prompts to swap server in T3
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla_oft --server-port 8777 --mode planner --task cpu --fps 10 \
+    --unnorm-key ur5e_vla_planner_10hz \
+    --correction-server-port 8777 --correction-unnorm-key ur5e_vla_correction_10hz
+```
+
+##### OFT Test 3: E2E @ 10Hz
+
+```bash
+# T3: serve OFT e2e model
+conda activate oft && cd /home/chris/Sibo/openvla-oft
+python vla-scripts/deploy.py \
+    --pretrained_checkpoint /home/chris/Sibo/IROS-VLA/OpenVLA-OFT/openvla-7b+ur5e_vla_e2e_10hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state \
+    --unnorm_key ur5e_vla_e2e_10hz --use_l1_regression True \
+    --use_proprio True --num_images_in_input 2 --port 8777
+```
+```bash
+# T4: run inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla_oft --server-port 8777 --mode e2e --task cpu --fps 10 \
+    --unnorm-key ur5e_vla_e2e_10hz
+```
+
+##### OFT Test 4: Planner @ 30Hz
+
+```bash
+# T3: serve OFT planner model (30Hz)
+conda activate oft && cd /home/chris/Sibo/openvla-oft
+python vla-scripts/deploy.py \
+    --pretrained_checkpoint /home/chris/Sibo/IROS-VLA/OpenVLA-OFT/openvla-7b+ur5e_vla_planner_30hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state \
+    --unnorm_key ur5e_vla_planner_30hz --use_l1_regression True \
+    --use_proprio True --num_images_in_input 2 --port 8777
+```
+```bash
+# T4: run inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla_oft --server-port 8777 --mode planner --task cpu --fps 30 \
+    --unnorm-key ur5e_vla_planner_30hz
+```
+
+##### OFT Test 5: Planner + correction @ 30Hz (manual server swap)
+
+```bash
+# T3: serve OFT planner model (same as OFT Test 4)
+# T4: run inference — on grasp failure, script prompts to swap server in T3
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla_oft --server-port 8777 --mode planner --task cpu --fps 30 \
+    --unnorm-key ur5e_vla_planner_30hz \
+    --correction-server-port 8777 --correction-unnorm-key ur5e_vla_correction_30hz
+```
+
+##### OFT Test 6: E2E @ 30Hz
+
+```bash
+# T3: serve OFT e2e model (30Hz)
+conda activate oft && cd /home/chris/Sibo/openvla-oft
+python vla-scripts/deploy.py \
+    --pretrained_checkpoint /home/chris/Sibo/IROS-VLA/OpenVLA-OFT/openvla-7b+ur5e_vla_e2e_30hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state \
+    --unnorm_key ur5e_vla_e2e_30hz --use_l1_regression True \
+    --use_proprio True --num_images_in_input 2 --port 8777
+```
+```bash
+# T4: run inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla_oft --server-port 8777 --mode e2e --task cpu --fps 30 \
+    --unnorm-key ur5e_vla_e2e_30hz
 ```
 
 ### Planner + Correction Mode Details
@@ -1802,10 +1891,13 @@ python experiments/run_inference.py \
     --checkpoint-name vla_planner_v1 \
     --correction-checkpoint-name vla_correction_v1
 
-# OpenVLA-OFT planner (no correction)
+# OpenVLA-OFT planner + correction (single-GPU, manual server swap)
 python experiments/run_inference.py \
     --model-type openvla_oft \
     --server-port 8777 \
+    --correction-server-port 8777 \
+    --unnorm-key ur5e_vla_planner_10hz \
+    --correction-unnorm-key ur5e_vla_correction_10hz \
     --mode planner \
     --task cpu \
     --fps 10
