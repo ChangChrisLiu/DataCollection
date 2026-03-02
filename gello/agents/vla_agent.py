@@ -119,11 +119,17 @@ class VLAAgent:
 
         Returns True if N consecutive actions satisfy:
           - delta (predicted - current state) < delta_thresh
-          - gripper past grip_thresh (direction depends on adapter)
+          - gripper past grip_thresh (only when adapter.use_gripper_for_stop)
+
+        OpenVLA/OFT models were trained on data where gripper=255 in stop
+        frames (pre-fix data), so the gripper value is always "closed" and
+        cannot distinguish stop from non-stop.  These adapters set
+        use_gripper_for_stop=False so only the delta criterion is used.
         """
         n_consec = self._stop_params["n_consec"]
         delta_thresh = self._stop_params["delta_thresh"]
         grip_thresh = self._stop_params["grip_thresh"]
+        check_gripper = self.adapter.use_gripper_for_stop
 
         if len(actions) < n_consec:
             return False
@@ -137,8 +143,8 @@ class VLAAgent:
                 if delta > delta_thresh:
                     all_ok = False
                     break
-                # Gripper check (adapter-aware direction)
-                if not self.adapter.is_stop_gripper(a, grip_thresh):
+                # Gripper check (skipped for OpenVLA/OFT — unreliable)
+                if check_gripper and not self.adapter.is_stop_gripper(a, grip_thresh):
                     all_ok = False
                     break
             if all_ok:
@@ -247,6 +253,8 @@ class OpenPIAdapter:
         """Return current joint positions for delta computation."""
         return np.array(obs["joint_positions"][:6], dtype=np.float32)
 
+    use_gripper_for_stop = True
+
     def is_stop_gripper(self, action: np.ndarray, grip_thresh: float) -> bool:
         """OpenPI gripper: 0=open, 1=close. Stop at high values."""
         return float(action[6]) > grip_thresh
@@ -322,6 +330,10 @@ class OpenVLAAdapter:
         # For EEF delta models, actions are deltas — so "current state" is
         # zeros (delta from zero = the delta itself, checked against thresh).
         return np.zeros(6, dtype=np.float32)
+
+    # Trained on pre-fix data where gripper=255 in stop frames — gripper
+    # prediction is always "closed" and cannot be used for stop detection.
+    use_gripper_for_stop = False
 
     def is_stop_gripper(self, action: np.ndarray, grip_thresh: float) -> bool:
         """OpenVLA gripper is inverted: 1=open, 0=close. Stop at low values."""
@@ -413,6 +425,10 @@ class OpenVLAOFTAdapter:
     def get_current_state(self, obs: Dict[str, Any]) -> np.ndarray:
         """Return zeros — actions are EEF deltas, so delta=action magnitude."""
         return np.zeros(6, dtype=np.float32)
+
+    # Trained on pre-fix data where gripper=255 in stop frames — gripper
+    # prediction is always "closed" and cannot be used for stop detection.
+    use_gripper_for_stop = False
 
     def is_stop_gripper(self, action: np.ndarray, grip_thresh: float) -> bool:
         """Same as OpenVLA — inverted gripper, stop at low values."""
