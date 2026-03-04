@@ -1530,8 +1530,7 @@ def main(args: Args):
 
             # OpenVLA: lower the end-effector 0.1m from home before each
             # episode so the model starts closer to the workspace.
-            # Skip in correction mode — already at the correction start position.
-            if args.model_type == "openvla" and args.mode != "correction":
+            if args.model_type == "openvla":
                 tcp = obs_client.get_tcp_pose_raw()
                 tcp[2] -= 0.1  # lower Z by 0.1 m
                 print("[INIT] OpenVLA pre-start: lowering EEF by 0.1 m...")

@@ -2258,7 +2258,7 @@ conda activate tele && python experiments/run_inference.py \
     --unnorm-key ur5e_vla_correction_10hz
 ```
 
-> **Note:** OpenVLA always uses dynamic home (current position at startup), regardless of mode. This means `--mode planner --model-type openvla` also captures the current position as home, then lowers 0.1m before each episode. The 0.1m lowering is skipped in correction mode since the robot is already at the correction start position.
+> **Note:** OpenVLA always uses dynamic home (current position at startup), regardless of mode. This means `--mode planner --model-type openvla` also captures the current position as home, then lowers 0.1m before each episode. The 0.1m lowering also applies in correction mode — the robot returns to the captured home between episodes, then lowers 0.1m to start. Other backends (OpenPI, OFT) do not lower.
 
 ### Language Instructions (Prompt Handling)
 
