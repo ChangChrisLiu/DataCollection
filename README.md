@@ -1557,7 +1557,7 @@ T3: Start model server (see per-backend commands below)
 
 T4: conda activate tele
     python experiments/run_inference.py --model-type <backend> --server-port <port> \
-        --mode planner --task cpu
+        --mode <planner|e2e|correction> --task cpu
 ```
 
 > **Camera settings (T2):** The `--camera-settings configs/camera_settings.json` flag is **required** for consistent inference. Without it, cameras use auto exposure/white-balance/gain, causing OOD lighting. Run `scripts/calibrate_cameras.py` first if you don't have a settings file.
@@ -1567,6 +1567,8 @@ T4: conda activate tele
 > **Robot IP:** Defaults to `10.125.144.209` in `launch_nodes.py`. Override with `--robot-ip` if your robot is at a different address.
 
 > **Continuous loop:** The inference script runs a **continuous episode loop** — after each episode saves and the robot homes, it automatically starts the next episode. Press **Ctrl+C** to stop (the in-progress episode is saved and the robot moves home).
+
+> **Dynamic home position:** In `correction` mode or when using `--model-type openvla`, the robot's current joint positions are captured at startup as the session home. The robot stays where it is (no homing move at startup) and returns to this captured position between episodes and on Ctrl+C. All other combinations use the default `HOME_JOINTS_RAD` / `HOME_GRIPPER_POS` constants.
 
 ### Starting Model Servers and Running Inference
 
@@ -1779,9 +1781,69 @@ conda activate tele && python experiments/run_inference.py \
     --model-type openpi --openpi-base base_zeroshot --mode planner --task cpu --fps 10
 ```
 
+##### Test 15: Pi0.5-DROID correction-only @ 10Hz
+
+Jog the robot to a post-grasp-failure pose first (e.g. gripper near the part but misaligned). The script captures the current position as the session home and runs the correction model directly.
+
+```bash
+# T3: serve correction model
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+    --policy.config pi05_droid_ur5e_correction_lora_10hz \
+    --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_10hz/pi05_droid_ur5e_correction_lora_10hz_v2/49999
+```
+```bash
+# T4: run correction-only inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base droid --mode correction --task cpu --fps 10
+```
+
+##### Test 16: Pi0.5-DROID correction-only @ 30Hz
+
+```bash
+# T3: serve correction model (30Hz)
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+    --policy.config pi05_droid_ur5e_correction_lora_30hz \
+    --policy.dir checkpoints/pi05_droid_ur5e_correction_lora_30hz_v2/49999
+```
+```bash
+# T4: run correction-only inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base droid --mode correction --task cpu --fps 30
+```
+
+##### Test 17: Pi0.5-base correction-only @ 10Hz
+
+```bash
+# T3: serve correction model
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+    --policy.config pi05_ur5e_correction_lora_10hz \
+    --policy.dir checkpoints/pi05_ur5e_correction_lora_10hz_v2/36000
+```
+```bash
+# T4: run correction-only inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base base --mode correction --task cpu --fps 10
+```
+
+##### Test 18: Pi0.5-base correction-only @ 30Hz
+
+```bash
+# T3: serve correction model (30Hz)
+cd /home/chris/openpi && uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+    --policy.config pi05_ur5e_correction_lora_30hz \
+    --policy.dir checkpoints/pi05_ur5e_correction_lora_30hz_v2/49999
+```
+```bash
+# T4: run correction-only inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base base --mode correction --task cpu --fps 30
+```
+
 > **Task selection:** Replace `--task cpu` with `--task ram` in any T4 command above to test the RAM task. The T3 serve command stays the same.
 
 > **Tip:** `run_inference.py` prints the exact T3 serve command(s) at startup. You can run the T4 command first (it will fail to connect), copy the printed serve command into T3, then re-run T4.
+
+> **Correction-only setup:** Before running `--mode correction`, manually jog the robot to a realistic post-grasp-failure pose (gripper near the part, slightly misaligned). The script reads the current position at startup as the session home — it does **not** move the robot to the default home first.
 
 #### OpenVLA: Complete Copy-Paste Commands
 
@@ -1887,6 +1949,40 @@ python vla-scripts/deploy.py \
 conda activate tele && python experiments/run_inference.py \
     --model-type openvla --server-port 8000 --mode planner --task cpu --fps 10 \
     --unnorm-key bridge_orig
+```
+
+##### VLA Test 8: Correction-only @ 10Hz
+
+Jog the robot to a post-grasp-failure pose first. Uses dynamic home (current position captured at startup).
+
+```bash
+# T3: serve OpenVLA correction model
+conda activate vla && cd /home/chris/Sibo/openvla
+python vla-scripts/deploy.py \
+    --openvla_path /home/chris/Sibo/IROS-VLA/OpenVLA/openvla-7b+ur5e_vla_correction_10hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug \
+    --port 8000
+```
+```bash
+# T4: run correction-only inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla --server-port 8000 --mode correction --task cpu --fps 10 \
+    --unnorm-key ur5e_vla_correction_10hz
+```
+
+##### VLA Test 9: Correction-only @ 30Hz
+
+```bash
+# T3: serve OpenVLA correction model (30Hz)
+conda activate vla && cd /home/chris/Sibo/openvla
+python vla-scripts/deploy.py \
+    --openvla_path /home/chris/Sibo/IROS-VLA/OpenVLA/openvla-7b+ur5e_vla_correction_30hz+b16+lr-0.0003+lora-r32+dropout-0.0--image_aug \
+    --port 8000
+```
+```bash
+# T4: run correction-only inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla --server-port 8000 --mode correction --task cpu --fps 30 \
+    --unnorm-key ur5e_vla_correction_30hz
 ```
 
 #### OpenVLA-OFT Server + Inference
@@ -2011,7 +2107,43 @@ conda activate tele && python experiments/run_inference.py \
     --unnorm-key bridge_orig
 ```
 
-#### Complete Test Matrix (28 tests)
+##### OFT Test 8: Correction-only @ 10Hz
+
+Jog the robot to a post-grasp-failure pose first.
+
+```bash
+# T3: serve OFT correction model
+conda activate oft && cd /home/chris/Sibo/openvla-oft
+python vla-scripts/deploy.py \
+    --pretrained_checkpoint /home/chris/Sibo/IROS-VLA/OpenVLA-OFT/openvla-7b+ur5e_vla_correction_10hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state \
+    --unnorm_key ur5e_vla_correction_10hz --use_l1_regression True \
+    --use_proprio True --num_images_in_input 2 --port 8777
+```
+```bash
+# T4: run correction-only inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla_oft --server-port 8777 --mode correction --task cpu --fps 10 \
+    --unnorm-key ur5e_vla_correction_10hz
+```
+
+##### OFT Test 9: Correction-only @ 30Hz
+
+```bash
+# T3: serve OFT correction model (30Hz)
+conda activate oft && cd /home/chris/Sibo/openvla-oft
+python vla-scripts/deploy.py \
+    --pretrained_checkpoint /home/chris/Sibo/IROS-VLA/OpenVLA-OFT/openvla-7b+ur5e_vla_correction_30hz+b8+lr-0.0003+lora-r32+dropout-0.0--image_aug--parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state \
+    --unnorm_key ur5e_vla_correction_30hz --use_l1_regression True \
+    --use_proprio True --num_images_in_input 2 --port 8777
+```
+```bash
+# T4: run correction-only inference
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla_oft --server-port 8777 --mode correction --task cpu --fps 30 \
+    --unnorm-key ur5e_vla_correction_30hz
+```
+
+#### Complete Test Matrix (36 tests)
 
 | # | Backend | Description | Mode | FPS |
 |---|---------|------------|------|-----|
@@ -2029,6 +2161,10 @@ conda activate tele && python experiments/run_inference.py \
 | PI-12 | OpenPI | Pi0.5-base e2e | e2e | 30 |
 | PI-13 | OpenPI | Pi0.5-DROID zero-shot | planner | 10 |
 | PI-14 | OpenPI | Pi0.5-base zero-shot | planner | 10 |
+| PI-15 | OpenPI | Pi0.5-DROID correction-only | correction | 10 |
+| PI-16 | OpenPI | Pi0.5-DROID correction-only | correction | 30 |
+| PI-17 | OpenPI | Pi0.5-base correction-only | correction | 10 |
+| PI-18 | OpenPI | Pi0.5-base correction-only | correction | 30 |
 | VLA-1 | OpenVLA | Planner | planner | 10 |
 | VLA-2 | OpenVLA | Planner + correction | planner | 10 |
 | VLA-3 | OpenVLA | E2E | e2e | 10 |
@@ -2036,6 +2172,8 @@ conda activate tele && python experiments/run_inference.py \
 | VLA-5 | OpenVLA | Planner + correction | planner | 30 |
 | VLA-6 | OpenVLA | E2E | e2e | 30 |
 | VLA-7 | OpenVLA | Base zero-shot | planner | 10 |
+| VLA-8 | OpenVLA | Correction-only | correction | 10 |
+| VLA-9 | OpenVLA | Correction-only | correction | 30 |
 | OFT-1 | OpenVLA-OFT | Planner | planner | 10 |
 | OFT-2 | OpenVLA-OFT | Planner + correction | planner | 10 |
 | OFT-3 | OpenVLA-OFT | E2E | e2e | 10 |
@@ -2043,8 +2181,10 @@ conda activate tele && python experiments/run_inference.py \
 | OFT-5 | OpenVLA-OFT | Planner + correction | planner | 30 |
 | OFT-6 | OpenVLA-OFT | E2E | e2e | 30 |
 | OFT-7 | OpenVLA-OFT | Base zero-shot | planner | 10 |
+| OFT-8 | OpenVLA-OFT | Correction-only | correction | 10 |
+| OFT-9 | OpenVLA-OFT | Correction-only | correction | 30 |
 
-### Planner + Correction Mode Details
+### Pipeline Mode Details
 
 #### Planner Mode (approach → reorient → skill → correction → skill_resume)
 
@@ -2084,6 +2224,41 @@ python experiments/run_inference.py \
     --model-type openpi --openpi-base droid \
     --mode e2e --task cpu --fps 10
 ```
+
+#### Correction-Only Mode (correction → reorient → skill_resume)
+
+Tests the correction model in isolation without the planner approach or first skill attempt. The robot starts from wherever it currently is — **jog it to a realistic post-grasp-failure pose before starting**.
+
+**How it works:**
+1. At startup, captures the current joint positions + gripper as the **session home** (no homing move)
+2. Runs the correction model inference loop (same stop detection as planner)
+3. On stop signal: full stop → reorient gripper to vertical → skill resume (absolute waypoints only)
+4. After the episode: robot returns to the captured session home
+5. Between episodes: robot returns to session home, ready for next correction attempt
+
+**Setup procedure:**
+1. Start T1 (robot server) and T2 (cameras) as usual
+2. Jog/teach the robot to a post-grasp-failure pose (gripper near the part, slightly misaligned)
+3. Start the correction model server in T3
+4. Run `--mode correction` in T4 — the script captures the current position and starts immediately
+
+```bash
+# OpenPI correction-only
+conda activate tele && python experiments/run_inference.py \
+    --model-type openpi --openpi-base droid --mode correction --task cpu --fps 10
+
+# OpenVLA correction-only (also uses dynamic home)
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla --server-port 8000 --mode correction --task cpu --fps 10 \
+    --unnorm-key ur5e_vla_correction_10hz
+
+# OpenVLA-OFT correction-only
+conda activate tele && python experiments/run_inference.py \
+    --model-type openvla_oft --server-port 8777 --mode correction --task cpu --fps 10 \
+    --unnorm-key ur5e_vla_correction_10hz
+```
+
+> **Note:** OpenVLA always uses dynamic home (current position at startup), regardless of mode. This means `--mode planner --model-type openvla` also captures the current position as home, then lowers 0.1m before each episode. The 0.1m lowering is skipped in correction mode since the robot is already at the correction start position.
 
 ### Language Instructions (Prompt Handling)
 
@@ -2129,7 +2304,7 @@ Per-task thresholds (tuned on 50-episode sweep with planner v3):
 
 These thresholds are defined in `VLAAgent.STOP_PARAMS` (`gello/agents/vla_agent.py`). The `--task` flag selects the correct thresholds automatically.
 
-**Post-stop reorientation (planner mode):** After the stop signal fires, the gripper is reoriented to point straight down (tool-Z = `[0,0,-1]`) while preserving XYZ position and yaw. This ensures the gripper is perfectly vertical before the skill CSV executes, regardless of any minor tilt from the planner approach. The reorientation uses the tool X-axis projected onto the world XY plane to preserve yaw, then constructs a rotation matrix with tool-Z = `[0,0,-1]`. This works for both CPU (yaw ≈ 0°) and RAM (yaw ≈ 90°) orientations.
+**Post-stop reorientation (planner + correction modes):** After the stop signal fires, the gripper is reoriented to point straight down (tool-Z = `[0,0,-1]`) while preserving XYZ position and yaw. This ensures the gripper is perfectly vertical before the skill CSV executes, regardless of any minor tilt from the model approach. The reorientation uses the tool X-axis projected onto the world XY plane to preserve yaw, then constructs a rotation matrix with tool-Z = `[0,0,-1]`. This works for both CPU (yaw ≈ 0°) and RAM (yaw ≈ 90°) orientations. In correction-only mode, the same reorientation happens before skill_resume.
 
 **Adapter-specific gripper direction:**
 
@@ -2154,7 +2329,7 @@ These thresholds are defined in `VLAAgent.STOP_PARAMS` (`gello/agents/vla_agent.
 | `--server-host` | `127.0.0.1` | Model server host |
 | `--server-port` | `8000` | Model server port |
 | `--task` | `cpu` | Task: `cpu` or `ram` (sets both skill CSV and language prompt) |
-| `--mode` | `planner` | Pipeline mode: `planner` or `e2e` |
+| `--mode` | `planner` | Pipeline mode: `planner`, `e2e`, or `correction` (correction-only, starts from current position) |
 | `--fps` | `10` | Control rate (must match training FPS) |
 | `--max-steps` | `6000` | Safety timeout in inference steps (6000 = 10 min at 10Hz) |
 | `--correction-server-port` | `0` | Correction model server port (0 = disabled) |
@@ -2333,6 +2508,7 @@ Each inference episode saves an `episode_meta.json` with all tracking fields:
 Possible `skill_outcome` values:
 - `"completed"` — skill finished all waypoints
 - `"completed_after_correction"` — grasp failed, correction ran, skill resumed and completed
+- `"completed_correction_only"` — correction-only mode, skill resume completed successfully
 - `"stop_signal"` — e2e mode, model emitted stop signal
 - `"timeout"` — max steps reached without stop signal
 - `"correction_timeout"` — correction model timed out without stop signal

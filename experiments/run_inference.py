@@ -14,14 +14,40 @@ always runs from the ``tele`` conda env:
   - OpenVLA-OFT:  REST client       → openvla-oft deploy.py   (conda oft)
 
 Pipeline modes:
-  planner:  Model approaches → CSV skill grasps → (if fail) correction model
-  e2e:      Model handles entire trajectory
+  planner:    Model approaches → CSV skill grasps → (if fail) correction model
+  e2e:        Model handles entire trajectory
+  correction: Correction-only (starts from current position → skill resume)
+
+Dynamic home position:
+  In ``correction`` mode or when ``--model-type openvla``, the robot's
+  current joint positions are captured at startup as the session home.
+  The robot stays where it is (no homing move) and returns to this
+  captured position between episodes and on Ctrl+C.  Other modes use
+  the default HOME_JOINTS_RAD / HOME_GRIPPER_POS constants.
 
 Terminal architecture:
   T1: python experiments/launch_nodes.py --robot ur
   T2: python experiments/launch_camera_nodes.py --camera-settings configs/camera_settings.json
-  T3: Start model server (see README § Inference Pipeline for per-backend commands)
-  T4: python experiments/run_inference.py --model-type openpi --task cpu
+  T3: Start model server (see below)
+  T4: python experiments/run_inference.py --mode <mode> --model-type <type> --task <task>
+
+Example T4 commands:
+  # Planner (OpenPI):
+  python experiments/run_inference.py --mode planner --model-type openpi --task cpu
+
+  # E2E (OpenPI):
+  python experiments/run_inference.py --mode e2e --model-type openpi --task ram
+
+  # Correction-only (OpenPI) — jog robot to a post-grasp-failure pose first:
+  python experiments/run_inference.py --mode correction --model-type openpi --task cpu
+
+  # Correction-only (OpenVLA):
+  python experiments/run_inference.py --mode correction --model-type openvla \
+      --task cpu --unnorm-key ur5e_vla_correction_10hz
+
+  # Planner (OpenVLA) — dynamic home, lowers 0.1m before each episode:
+  python experiments/run_inference.py --mode planner --model-type openvla \
+      --task cpu --unnorm-key ur5e_vla_planner_10hz
 
 Ctrl+C to e-stop the robot and save the current episode.
 """
@@ -279,7 +305,8 @@ class Args:
     task: str = "cpu"
     """Task to perform: "cpu" or "ram". Sets the language prompt and skill CSV."""
     mode: str = "planner"
-    """Pipeline mode: "planner" (approach + skill + correction) or "e2e"."""
+    """Pipeline mode: "planner" (approach + skill + correction), "e2e",
+    or "correction" (correction-only, starts from current position)."""
 
     # --- Server connection ---
     server_host: str = "127.0.0.1"
@@ -564,10 +591,17 @@ def save_and_go_home(
         )
         print(f"[INFERENCE] Recording saved ({len(frames)} frames).")
 
+    home_j = (
+        _session_home_joints if _session_home_joints is not None else HOME_JOINTS_RAD
+    )
+    home_g = (
+        _session_home_gripper if _session_home_gripper is not None else HOME_GRIPPER_POS
+    )
+
     robot_client.set_gripper_speed(255)
-    robot_client.set_gripper(HOME_GRIPPER_POS)
+    robot_client.set_gripper(home_g)
     print("[INFERENCE] Moving to home position...")
-    robot_client.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
+    robot_client.move_joints(list(home_j), speed=0.5, accel=0.3)
 
     # Ask human to label the episode while robot homes
     if episode_dir is not None:
@@ -1077,6 +1111,152 @@ def run_e2e_mode(
 
 
 # ---------------------------------------------------------------------------
+# Mode C: Correction-Only
+# ---------------------------------------------------------------------------
+
+
+def run_correction_mode(
+    args: Args,
+    agent: VLAAgent,
+    robot_client,
+    obs_client,
+    camera_clients: Dict[str, ZMQClientCamera],
+    skill_executor: CSVSkillExecutor,
+    buffer: EpisodeBuffer,
+    writer: DatasetWriter,
+    rec_mgr: RecordingThreadManager,
+    prompt: str = "",
+):
+    """Correction-only mode — runs correction + skill_resume from current position.
+
+    Skips the planner approach and first skill attempt. The robot starts
+    wherever it is and runs the correction model until a stop signal fires,
+    then executes the skill resume (absolute waypoints only).
+    """
+    buffer.start()
+    buffer.set_phase("correction")
+
+    last_wrist_ts = 0.0
+    last_base_ts = 0.0
+    obs = get_obs(robot_client, camera_clients)
+    dt = 1.0 / args.fps
+
+    print(
+        f"\n[CORRECTION] Starting correction-only "
+        f"({args.max_steps} max steps @ {args.fps} Hz)"
+    )
+
+    for step in range(args.max_steps):
+        t0 = time.time()
+
+        agent.execute_step(obs, robot_client)
+
+        if args.record:
+            cur_w = obs.get("wrist_timestamp", 0.0)
+            cur_b = obs.get("base_timestamp", 0.0)
+            if (cur_w > 0 and cur_w > last_wrist_ts) or (
+                cur_b > 0 and cur_b > last_base_ts
+            ):
+                frame = build_frame(obs, camera_clients, args.image_size)
+                buffer.record_frame(frame)
+                if cur_w > last_wrist_ts:
+                    last_wrist_ts = cur_w
+                if cur_b > last_base_ts:
+                    last_base_ts = cur_b
+
+        if agent.stop_detected:
+            print(
+                f"\n[CORRECTION] Stop signal at step {step} — triggering skill resume"
+            )
+            break
+
+        obs = get_obs(robot_client, camera_clients)
+
+        elapsed = time.time() - t0
+        if elapsed < dt:
+            time.sleep(dt - elapsed)
+
+        if step > 0 and step % args.fps == 0:
+            print(
+                f"\r[CORRECTION] step {step}/{args.max_steps} | "
+                f"frames: {buffer.num_frames}     ",
+                end="",
+                flush=True,
+            )
+
+    if not agent.stop_detected:
+        print("\n[CORRECTION] Max steps reached without stop signal")
+        save_and_go_home(
+            robot_client,
+            buffer,
+            writer,
+            rec_mgr,
+            skill_name=args.task,
+            outcome="correction_timeout",
+            model_type=args.model_type,
+            prompt=prompt,
+            checkpoint_name=args.checkpoint_name,
+            correction_checkpoint_name=args.correction_checkpoint_name,
+            mode=args.mode,
+            inference_fps=args.fps,
+        )
+        return
+
+    # ---------------------------------------------------------------
+    # Skill resume (absolute waypoints only)
+    # ---------------------------------------------------------------
+    _full_stop(robot_client)
+    time.sleep(0.2)
+
+    # Reorient gripper to vertical before skill resume
+    current_tcp = robot_client.get_tcp_pose_raw()
+    R_cur = Rotation.from_rotvec(current_tcp[3:]).as_matrix()
+    tool_x = R_cur[:, 0].copy()
+    tool_x[2] = 0.0
+    tool_x /= np.linalg.norm(tool_x)
+    new_z = np.array([0.0, 0.0, -1.0])
+    new_y = np.cross(new_z, tool_x)
+    new_y /= np.linalg.norm(new_y)
+    R_vert = np.column_stack([tool_x, new_y, new_z])
+    vertical_rotvec = Rotation.from_matrix(R_vert).as_rotvec()
+    vertical_tcp = current_tcp.copy()
+    vertical_tcp[3:] = vertical_rotvec
+    print("[CORRECTION] Reorienting gripper to vertical...")
+    robot_client.move_linear(vertical_tcp, speed=0.05, accel=0.1, asynchronous=False)
+
+    buffer.set_phase("skill_resume")
+    if args.record:
+        rec_mgr.start()
+
+    interrupt_event = threading.Event()
+    print("[PIPELINE] Resuming skill (absolute waypoints only)...")
+    completed, resume_info = skill_executor.execute(
+        args.task,
+        interrupt_event=interrupt_event,
+        resume_absolute_only=True,
+    )
+
+    rec_mgr.stop()
+    outcome = "completed_correction_only" if completed else "skill_resume_failed"
+    print(f"[PIPELINE] Skill resume {'completed' if completed else 'failed'}.")
+    save_and_go_home(
+        robot_client,
+        buffer,
+        writer,
+        rec_mgr,
+        skill_name=args.task,
+        outcome=outcome,
+        grasp_info=resume_info,
+        model_type=args.model_type,
+        prompt=prompt,
+        checkpoint_name=args.checkpoint_name,
+        correction_checkpoint_name=args.correction_checkpoint_name,
+        mode=args.mode,
+        inference_fps=args.fps,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Task instructions (must match training data from conversion_utils.py)
 # ---------------------------------------------------------------------------
 
@@ -1091,6 +1271,16 @@ TASK_INSTRUCTIONS = {
         "then back home."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Dynamic home position (set at startup for correction mode / OpenVLA)
+# ---------------------------------------------------------------------------
+
+# When set, save_and_go_home() and Ctrl+C handler use these instead of
+# the default HOME_JOINTS_RAD / HOME_GRIPPER_POS constants.
+_session_home_joints: Optional[np.ndarray] = None
+_session_home_gripper: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1109,7 +1299,8 @@ def main(args: Args):
 
     # Auto-derive checkpoint names for OpenPI if not explicitly set
     if args.model_type == "openpi":
-        target = "planner" if args.mode == "planner" else "e2e"
+        target_map = {"planner": "planner", "e2e": "e2e", "correction": "correction"}
+        target = target_map.get(args.mode, args.mode)
         key = (args.openpi_base, target, args.fps)
         if not args.checkpoint_name and key in OPENPI_CHECKPOINTS:
             _, ckpt_path = OPENPI_CHECKPOINTS[key]
@@ -1201,7 +1392,8 @@ def main(args: Args):
     # ------------------------------------------------------------------
     # OFT uses manual stop (operator presses 's') + delta confirmation,
     # so disable automatic stop detection for OFT planner mode.
-    auto_stop = args.mode != "e2e" and args.model_type != "openvla_oft"
+    # Correction mode always uses automatic stop detection.
+    auto_stop = args.mode not in ("e2e",) and args.model_type != "openvla_oft"
     agent = VLAAgent(
         adapter,
         args.fps,
@@ -1237,10 +1429,10 @@ def main(args: Args):
             print("[INIT] Correction via manual server swap after grasp failure.")
 
     # ------------------------------------------------------------------
-    # 6. Setup skill executor (planner mode only)
+    # 6. Setup skill executor (planner + correction modes)
     # ------------------------------------------------------------------
     skill_executor = None
-    if args.mode == "planner":
+    if args.mode in ("planner", "correction"):
         skill_csvs = {
             "cpu": args.cpu_skill_csv,
             "ram": args.ram_skill_csv,
@@ -1286,10 +1478,29 @@ def main(args: Args):
         print(f"[INIT] Make sure launch_nodes.py is running. Error: {e}")
         return
 
-    robot_client.set_gripper_speed(255)
-    robot_client.set_gripper(HOME_GRIPPER_POS)
-    print("[INIT] Moving to home position...")
-    robot_client.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
+    global _session_home_joints, _session_home_gripper
+
+    if args.mode == "correction" or args.model_type == "openvla":
+        # Read current position as session home — robot stays where it is
+        init_obs = obs_client.get_observations()
+        _session_home_joints = np.array(init_obs["joint_positions"][:6])
+        _session_home_gripper = int(round(init_obs["gripper_position"][0] * 255))
+        print(
+            f"[INIT] Dynamic home captured (joints[0:3]="
+            f"{_session_home_joints[:3].round(3)}, gripper={_session_home_gripper})"
+        )
+        if args.mode == "correction":
+            # Stay at current position — no homing move
+            print("[INIT] Correction mode — skipping home move.")
+        else:
+            # OpenVLA non-correction: still move to current pos (no-op) to set gripper
+            robot_client.set_gripper_speed(255)
+            robot_client.set_gripper(_session_home_gripper)
+    else:
+        robot_client.set_gripper_speed(255)
+        robot_client.set_gripper(HOME_GRIPPER_POS)
+        print("[INIT] Moving to home position...")
+        robot_client.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
 
     print("[INIT] Home reached. Starting inference...\n")
 
@@ -1319,7 +1530,8 @@ def main(args: Args):
 
             # OpenVLA: lower the end-effector 0.1m from home before each
             # episode so the model starts closer to the workspace.
-            if args.model_type == "openvla":
+            # Skip in correction mode — already at the correction start position.
+            if args.model_type == "openvla" and args.mode != "correction":
                 tcp = obs_client.get_tcp_pose_raw()
                 tcp[2] -= 0.1  # lower Z by 0.1 m
                 print("[INIT] OpenVLA pre-start: lowering EEF by 0.1 m...")
@@ -1364,6 +1576,19 @@ def main(args: Args):
                     rec_mgr,
                     prompt=prompt,
                 )
+            elif args.mode == "correction":
+                run_correction_mode(
+                    args,
+                    agent,
+                    robot_client,
+                    obs_client,
+                    camera_clients,
+                    skill_executor,
+                    buffer,
+                    writer,
+                    rec_mgr,
+                    prompt=prompt,
+                )
             else:
                 raise ValueError(f"Unknown mode: {args.mode}")
 
@@ -1395,17 +1620,28 @@ def main(args: Args):
                 frames, segments, metadata=episode_meta
             )
 
+        home_j = (
+            _session_home_joints
+            if _session_home_joints is not None
+            else HOME_JOINTS_RAD
+        )
+        home_g = (
+            _session_home_gripper
+            if _session_home_gripper is not None
+            else HOME_GRIPPER_POS
+        )
+
         print("[E-STOP] Moving to home position...")
         try:
             robot_client.set_gripper_speed(255)
         except Exception as e:
             print(f"[E-STOP] set_gripper_speed failed: {e}")
         try:
-            robot_client.set_gripper(HOME_GRIPPER_POS)
+            robot_client.set_gripper(home_g)
         except Exception as e:
             print(f"[E-STOP] set_gripper failed: {e}")
         try:
-            robot_client.move_joints(list(HOME_JOINTS_RAD), speed=0.5, accel=0.3)
+            robot_client.move_joints(list(home_j), speed=0.5, accel=0.3)
         except Exception as e:
             print(f"[E-STOP] move_joints failed: {e}")
 
